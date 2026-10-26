@@ -104,6 +104,19 @@ Every member of a group is an **Administrator** or a **User**. The database enfo
 - Whoever creates a group is its first Administrator, and a group can never lose its last Administrator (the database refuses).
 - A User can't add a brand-new person from *Add expense*; they pick people already in the group.
 
+## Groups
+
+A **group** is one circle of people: its own trips, people, categories and access list. Groups never see each other, so use one per circle (e.g. "Family", "Sailing crew").
+
+- **Access → Groups**: open (switch), rename, delete, and **Create group**. Creating makes you the new group's Administrator, and it starts with the default categories. People are per group, so you'll fill in Your details once in each.
+- **Group creation is locked**: only someone who already administers a group can create one (enforced in the database). People who sign in without an invitation are told to ask for one and aren't offered a group of their own.
+- **To open creation to everyone later**, run in the Supabase SQL editor:
+  ```sql
+  update private.settings set value = 'true' where key = 'open_group_creation';
+  ```
+  Then also show the "Create group" choice to newcomers (the Welcome screen offers it whenever the database says the person may create one).
+- Deleting a group removes all its trips, expenses, people, categories, receipts and access. The app asks you to type the group's name to confirm.
+
 ## Privacy
 
 - **Only approved email addresses get in.** The database itself checks that the signed-in, code-verified email is on the group's list before returning or changing anything. The app link alone is useless.

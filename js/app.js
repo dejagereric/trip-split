@@ -259,15 +259,15 @@ function authHtml() {
     <h1>Welcome</h1>
     <p>You’re signed in as <strong>${esc(me)}</strong>, but you’re not in a group yet.</p>
     <div class="card">
-      <span class="strong">Joining someone else’s trips?</span>
-      <span class="muted">Ask them to add <strong>${esc(me)}</strong> under Trips → Access, then tap Check again.</span>
+      <span class="strong">Waiting for an invitation?</span>
+      <span class="muted">Ask whoever invited you to add <strong>${esc(me)}</strong> under Trips → Access, then tap Check again.</span>
       <button type="button" class="btn" data-action="checkGroups" ${busy}>Check again</button>
     </div>
-    <div class="card">
+    ${state.canCreate ? `<div class="card">
       <span class="strong">Starting fresh?</span>
       <label class="field"><span class="lbl">Group name</span><input data-auth="groupName" type="text" maxlength="60" value="${esc(state.groupName)}"></label>
-      <button type="button" class="btn primary" data-action="createGroup" ${busy}>Create our group</button>
-    </div>
+      <button type="button" class="btn primary" data-action="createGroup" ${busy}>Create group</button>
+    </div>` : ''}
     ${msg}
     <button type="button" class="link center" data-action="signOut">Sign out</button>
   </main>`;
@@ -556,7 +556,32 @@ function accessHtml() {
       <span class="small muted">Group: ${esc(group?.name || '')}${state.members.find((m) => m.email === me) ? ' · ' + roleName(state.members.find((m) => m.email === me).role) : ''}</span>
       <button type="button" class="btn" data-action="signOut">Sign out</button>
     </div>
-    ${state.groups.length > 1 ? `<div class="field"><span class="lbl">Your groups</span><div class="wrap">${state.groups.map((g) => chip(esc(g.name), 'switchGroup', { id: g.id }, g.id === store.groupId)).join('')}</div></div>` : ''}
+    <h2>Groups</h2>
+    <p class="small muted note">A group is one circle of people: its trips, people, categories and who can sign in. Groups never see each other.</p>
+    <div class="card tight">
+      ${state.groups.map((g) => {
+        const current = g.id === store.groupId;
+        if (state.groupEdit && state.groupEdit.id === g.id) {
+          return `<div class="list-row cat-row">
+            <input data-groupedit="1" type="text" maxlength="60" aria-label="Group name" value="${esc(state.groupEdit.name)}">
+            <button type="button" class="btn small-btn primary" data-action="saveGroupName">Save</button>
+            <button type="button" class="btn small-btn" data-action="cancelGroupName">Cancel</button>
+          </div>`;
+        }
+        return `<div class="list-row access-row">
+          <span class="grow"><span class="strong">${esc(g.name)}</span><span class="small muted">${current ? 'Open now' : 'Tap Open to switch'}</span></span>
+          <div class="row-btns">
+            ${current ? '' : `<button type="button" class="btn small-btn" data-action="switchGroup" data-id="${esc(g.id)}">Open</button>`}
+            <button type="button" class="btn small-btn" data-action="editGroup" data-id="${esc(g.id)}">Rename</button>
+            <button type="button" class="btn small-btn danger" data-action="deleteGroup" data-id="${esc(g.id)}">Delete</button>
+          </div>
+        </div>`;
+      }).join('')}
+    </div>
+    <div class="newperson">
+      <input data-newgroup="1" type="text" maxlength="60" autocomplete="off" placeholder="New group, e.g. Sailing crew" aria-label="New group name" value="${esc(state.newGroup || '')}">
+      <button type="button" class="btn" data-action="newGroup">Create group</button>
+    </div>
     <h2>Who can sign in</h2>
     <p class="small muted note">Only these email addresses can open this group’s trips. Administrators manage people and access; Users add and edit trips and expenses.</p>
     <div class="card tight">
@@ -1009,7 +1034,10 @@ async function enterGroup() {
     state.authMsg = 'Couldn’t reach the database. ' + (err?.message || '');
   }
   state.authBusy = false;
-  if (!state.groups.length) { state.auth = 'noGroup'; render(); return; }
+  if (!state.groups.length) {
+    state.canCreate = await store.canCreateGroup().catch(() => false);
+    state.auth = 'noGroup'; render(); return;
+  }
   const last = pref.get('activeGroup');
   const g = state.groups.find((x) => x.id === last) || state.groups[0];
   store.useGroup(g.id);
@@ -1040,6 +1068,7 @@ function errorText(err) {
   const m = String(err?.message || '');
   if (err?.code === '42501' || err?.message === 'not_allowed' || /row-level security|permission denied/i.test(m)) return 'Only Administrators can do that.';
   if (/at least one Administrator/i.test(m)) return 'A group needs at least one Administrator.';
+  if (/limited to Administrators/i.test(m)) return 'Only Administrators can create groups.';
   if (m === 'storage_full') return 'Phone storage is full — remove a receipt photo or two.';
   if (/duplicate key/i.test(m)) return 'That already exists.';
   return 'Couldn’t save. Check your connection and try again.';
@@ -1559,6 +1588,44 @@ const actions = {
     render();
   },
   async switchGroup(d) { pref.set('activeGroup', d.id); state.screen = 'trips'; await enterGroup(); },
+  editGroup(d) { const g = state.groups.find((x) => x.id === d.id); if (g) { state.groupEdit = { id: g.id, name: g.name }; render(); const i = $('[data-groupedit]'); if (i) i.focus(); } },
+  cancelGroupName() { state.groupEdit = null; render(); },
+  async saveGroupName() {
+    const ed = state.groupEdit;
+    const name = (ed?.name || '').trim().slice(0, 60);
+    if (!ed || !name) { flash('Type a group name.'); return; }
+    try {
+      await store.renameGroup(ed.id, name);
+      state.groups = state.groups.map((g) => (g.id === ed.id ? { ...g, name } : g));
+      state.groupEdit = null;
+      flash(`Group renamed to ${name}`);
+    } catch (err) { flash(errorText(err)); }
+  },
+  async newGroup() {
+    const name = (state.newGroup || '').trim().slice(0, 60);
+    if (!name) { flash('Type a name for the new group.'); return; }
+    try {
+      const id = await store.createGroup(name);
+      state.newGroup = '';
+      pref.set('activeGroup', id);
+      state.screen = 'trips';
+      await enterGroup();
+      flash(`${name} created. You’re its Administrator.`);
+    } catch (err) { flash(/limited to Administrators/i.test(err?.message || '') ? 'Only Administrators can create groups.' : errorText(err)); }
+  },
+  async deleteGroup(d) {
+    const g = state.groups.find((x) => x.id === d.id);
+    if (!g) return;
+    const typed = window.prompt(`Delete “${g.name}” for everyone? This removes all of its trips, expenses, people, categories, receipts and access, and can’t be undone.\n\nType the group name to confirm:`);
+    if (typed == null) return;
+    if (typed.trim() !== g.name) { flash('Name didn’t match. Nothing was deleted.'); return; }
+    try {
+      await store.deleteGroup(g.id);
+      if (pref.get('activeGroup') === g.id) pref.set('activeGroup', '');
+      flash(`${g.name} deleted`);
+      await enterGroup();
+    } catch (err) { flash(errorText(err)); }
+  },
   async addMember(d = {}) {
     const email = state.newMember.trim().toLowerCase();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { flash('Enter a valid email address.'); return; }
@@ -1703,6 +1770,8 @@ document.addEventListener('input', (ev) => {
   else if (ds.pf && state.personForm) state.personForm[ds.pf] = el.value;
   else if (ds.mf && state.meForm) state.meForm[ds.mf] = el.value;
   else if (ds.newcat) state.newCat = el.value;
+  else if (ds.newgroup) state.newGroup = el.value;
+  else if (ds.groupedit && state.groupEdit) state.groupEdit.name = el.value;
   else if (ds.catedit && state.catEdit) state.catEdit.name = el.value;
   else if (ds.search) { state.search = el.value; const l = $('#ledger-list'); if (l) l.innerHTML = ledgerListHtml(); }
 });
@@ -1712,6 +1781,8 @@ document.addEventListener('keydown', (ev) => {
   if (ev.key === 'Enter' && ds.np) { ev.preventDefault(); actions.createPerson(); }
   if (ev.key === 'Enter' && ds.nm) { ev.preventDefault(); actions.addMember(); }
   if (ev.key === 'Enter' && ds.newcat) { ev.preventDefault(); actions.addCat(); }
+  if (ev.key === 'Enter' && ds.newgroup) { ev.preventDefault(); actions.newGroup(); }
+  if (ev.key === 'Enter' && ds.groupedit) { ev.preventDefault(); actions.saveGroupName(); }
   if (ev.key === 'Enter' && ds.catedit) { ev.preventDefault(); actions.saveCatName(); }
   if (ev.key === 'Enter' && ds.auth && !state.authBusy) {
     ev.preventDefault();

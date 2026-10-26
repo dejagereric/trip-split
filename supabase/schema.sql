@@ -72,11 +72,12 @@ language sql stable security definer set search_path = '' as $$
   select exists (select 1 from public.group_members m where m.group_id = g and m.email = private.my_email() and m.role = 'admin')
 $$;
 
--- Never leave a group without an Administrator.
+-- Never leave a group without an Administrator (unless the whole group is being deleted).
 create or replace function private.keep_an_admin() returns trigger
 language plpgsql security definer set search_path = '' as $$
 begin
-  if old.role = 'admin' and (tg_op = 'DELETE' or new.role <> 'admin') then
+  if old.role = 'admin' and (tg_op = 'DELETE' or new.role <> 'admin')
+     and exists (select 1 from public.groups g where g.id = old.group_id) then  -- deleting the whole group is fine
     if not exists (select 1 from public.group_members m
                    where m.group_id = old.group_id and m.role = 'admin' and m.email <> old.email) then
       raise exception 'A group needs at least one Administrator.';
@@ -97,7 +98,34 @@ $$;
 revoke all on all functions in schema private from public, anon;
 grant execute on all functions in schema private to authenticated;
 
--- Creating a group makes the caller its owner, in one step. Public on purpose: the app calls it.
+-- App-wide settings, not exposed through the API.
+create table if not exists private.settings (
+  key   text primary key,
+  value jsonb not null
+);
+revoke all on private.settings from public, anon, authenticated;
+-- Group creation is closed: only people who already administer a group may create one.
+-- To open it to everyone later:  update private.settings set value = 'true' where key = 'open_group_creation';
+insert into private.settings (key, value) values ('open_group_creation', 'false') on conflict (key) do nothing;
+
+create or replace function private.may_create_group() returns boolean
+language sql stable security definer set search_path = '' as $$
+  select coalesce((select value = 'true'::jsonb from private.settings where key = 'open_group_creation'), false)
+      or exists (select 1 from public.group_members m where m.email = private.my_email() and m.role = 'admin')
+$$;
+revoke all on function private.may_create_group() from public, anon;
+grant execute on function private.may_create_group() to authenticated;
+
+-- Lets the app ask whether to offer "Create group".
+create or replace function public.can_create_group() returns boolean
+language sql stable security definer set search_path = '' as $$
+  select auth.uid() is not null and private.may_create_group()
+$$;
+revoke all on function public.can_create_group() from public, anon;
+grant execute on function public.can_create_group() to authenticated;
+
+-- Creating a group makes the caller its Administrator, in one step. Public on purpose: the app calls it.
+-- NOTE: the very first group in a brand-new project needs open_group_creation = true (or an insert by hand).
 create or replace function public.create_group(group_name text) returns uuid
 language plpgsql security definer set search_path = '' as $$
 declare
@@ -106,6 +134,9 @@ declare
 begin
   if auth.uid() is null or me = '' then
     raise exception 'Sign in first';
+  end if;
+  if not private.may_create_group() then
+    raise exception 'Creating groups is limited to Administrators.' using errcode = '42501';
   end if;
   insert into public.groups (name, created_by)
   values (coalesce(nullif(trim(group_name), ''), 'Our trips'), auth.uid())

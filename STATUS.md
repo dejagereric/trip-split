@@ -19,6 +19,7 @@ _Last updated: October 26, 2026_
 - **Ledger:** newest first (fixed order), Search, and Export (CSV now; Google Sheets once `googleClientId` is set; see README → Google Sheets export setup).
 - **Categories:** `categories` table, shared per group, managed under Trips → Categories. Yacht charter and Boat expenses added. The receipt reader uses the group's list.
 - **Roles (RBAC):** `group_members.role` is `admin` (Administrators) or `user` (Users). Eric is an Administrator. Row-level security: People (`parties`) writes are admin-only except a User's own record; Access (`group_members`) is admin-only (Users see only their own row); group rename/delete admin-only; a trigger keeps at least one admin. Tested in the live database with simulated Administrator, User and outsider (rolled back). No UI gating by design; refusals show "Only Administrators can do that."
+- **Groups (Oct 26):** Access → Groups: create / open / rename / delete. Group creation is locked in the database (`private.settings.open_group_creation = false`; only existing Administrators may create). Uninvited sign-ins aren't offered a group. The current group is named "This is a test"; Eric plans to create a real group when testing is done, then delete or rename the test one.
 - **Layout:** the app is pinned to the visible screen (fixed position), which fixes the tab bar dropping below the screen on Android.
 
 ## Next: custom domain `trips.ericdejager.com`

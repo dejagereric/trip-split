@@ -135,6 +135,17 @@ async function cloudStore(config) {
 
     async listGroups() { return must(await sb.from('groups').select('id, name, created_at').order('created_at')); },
     async createGroup(name) { return must(await sb.rpc('create_group', { group_name: name })); },
+    async canCreateGroup() { const { data, error } = await sb.rpc('can_create_group'); return !error && data === true; },
+    async renameGroup(id, name) { if (!must(await sb.from('groups').update({ name }).eq('id', id).select('id')).length) throw new Error('not_allowed'); },
+    // Deletes the group and, through the database, all its trips, people, expenses and access.
+    async deleteGroup(id) {
+      // Best effort: remove its receipt photos first (the database can't reach storage files).
+      try {
+        const { data } = await sb.storage.from('receipts').list(id, { limit: 1000 });
+        if (data && data.length) await sb.storage.from('receipts').remove(data.map((f) => id + '/' + f.name));
+      } catch {}
+      if (!must(await sb.from('groups').delete().eq('id', id).select('id')).length) throw new Error('not_allowed');
+    },
     async members() { return must(await sb.from('group_members').select('email, role, added_at').eq('group_id', groupId).order('added_at')); },
     async addMember(email, role = 'user') { must(await sb.from('group_members').insert({ group_id: groupId, email: email.trim().toLowerCase(), role })); },
     // Updates and deletes the database refuses affect no rows rather than erroring, so check.
