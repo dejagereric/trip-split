@@ -56,3 +56,21 @@ export function minimalTransfers(net, ids) {
   }
   return out;
 }
+
+// ---------- currency conversion ----------
+// rate: 1 unit of the spent currency = `rate` units of the trip's ledger currency.
+export const convert = (amount, rate) => Math.round(amount * rate);
+
+// Convert per-person shares (in the spent currency) to the ledger currency so they
+// add up exactly to the converted total; any rounding cent goes to the largest share.
+export function convertShares(origShares, rate, convTotal) {
+  const ids = Object.keys(origShares);
+  const out = {};
+  ids.forEach((id) => { out[id] = convert(origShares[id], rate); });
+  const diff = convTotal - ids.reduce((a, id) => a + out[id], 0);
+  if (diff && ids.length) {
+    const big = ids.reduce((a, b) => (origShares[b] > origShares[a] ? b : a));
+    out[big] += diff;
+  }
+  return out;
+}

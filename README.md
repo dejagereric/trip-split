@@ -95,6 +95,13 @@ The app checks for changes every 15 seconds while open, and whenever it comes ba
 - **The repo holds only public settings.** The publishable key is meant to be public; the access rules do the protecting. Making the repo public (for free GitHub Pages) exposes the code, not your data.
 - **The Anthropic key never reaches the app.** It lives only in the Supabase function's secrets, plus your gitignored `supabase/.env`.
 
+## Currencies
+
+- Each trip has a **trip currency**. Balances, settle-up and the spent tallies are in it. Set it when creating the trip; it's locked once the trip has expenses.
+- Each trip also has **currencies you'll spend** (USD and EUR by default). On *Add expense*, tap the currency next to the amount to switch. Choosing another currency adds it to the trip's list. New expenses start in the last currency you used.
+- Expenses in another currency are converted at **that day's rate** (Frankfurter mid-market rates, through the `fx-rate` Supabase function). You can type your card's actual rate instead. The rate is saved with the expense, so balances never shift later.
+- The Ledger shows what was spent (for example €90.00) and its trip-currency value ($101.13).
+
 ## How the math works
 
 - **Spent:** what a person paid out of pocket on this trip.

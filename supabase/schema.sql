@@ -153,6 +153,8 @@ update public.trips set currency = case currency
   else currency end
 where currency !~ '^[A-Z]{3}$';
 alter table public.trips alter column currency set default 'USD';
+-- Currencies the trip expects to spend in, in the order to offer them (USD and EUR first by default).
+alter table public.trips add column if not exists currencies jsonb not null default '["USD","EUR"]'::jsonb;
 
 create index if not exists parties_group_idx on public.parties (group_id);
 create index if not exists trips_group_idx   on public.trips (group_id);

@@ -1,11 +1,29 @@
 import { CONFIG } from './config.js';
-import { cents, splitEqual, computeBalances, minimalTransfers } from './logic.js';
+import { cents, splitEqual, computeBalances, minimalTransfers, convert, convertShares } from './logic.js';
 import { createStore } from './store.js';
 
 // ---------- constants ----------
 const PALETTE = ['#3346C8', '#F2A33A', '#13806F', '#B5365B', '#6C47C2', '#8DB33A', '#1F6FB2', '#C05621'];
-const CURRENCIES = ['$', '€', '£', '¥', '₹', 'A$', 'C$', 'CHF'];
-const CODES = { '$': 'USD', '€': 'EUR', '£': 'GBP', '¥': 'JPY', '₹': 'INR', 'A$': 'AUD', 'C$': 'CAD', 'CHF': 'CHF' };
+// Currencies (ISO codes). Everything Frankfurter's daily rates cover; the common ones first.
+const COMMON_CURRENCIES = ['USD', 'EUR', 'GBP', 'CAD', 'MXN', 'CHF', 'JPY', 'AUD'];
+const ALL_CURRENCIES = ['USD', 'EUR', 'GBP', 'CAD', 'MXN', 'CHF', 'JPY', 'AUD', 'BGN', 'BRL', 'CNY', 'CZK', 'DKK', 'HKD', 'HUF', 'IDR', 'ILS', 'INR', 'ISK', 'KRW', 'MYR', 'NOK', 'NZD', 'PHP', 'PLN', 'RON', 'SEK', 'SGD', 'THB', 'TRY', 'ZAR'];
+const LEGACY_SYMBOLS = { '$': 'USD', '€': 'EUR', '£': 'GBP', '¥': 'JPY', '₹': 'INR', 'A$': 'AUD', 'C$': 'CAD' };
+const toCode = (c) => (LEGACY_SYMBOLS[c] || (/^[A-Z]{3}$/.test(c || '') ? c : 'USD'));
+const curName = (() => {
+  let dn = null;
+  try { dn = new Intl.DisplayNames(['en'], { type: 'currency' }); } catch {}
+  return (code) => { try { return dn ? dn.of(code) : code; } catch { return code; } };
+})();
+const fmtCache = {};
+const fmt = (code) => fmtCache[code] || (fmtCache[code] = new Intl.NumberFormat('en-US', { style: 'currency', currency: code }));
+const curSymbol = (code) => { try { return fmt(code).formatToParts(0).find((x) => x.type === 'currency').value; } catch { return code; } };
+// A trip's preferred currencies: its ledger currency plus the ones it expects, USD and EUR first by default.
+function tripCurrencies(trip) {
+  const ledger = toCode(trip?.currency);
+  const list = (trip?.currencies && trip.currencies.length ? trip.currencies : ['USD', 'EUR']).map(toCode);
+  if (!list.includes(ledger)) list.unshift(ledger);
+  return list.filter((c, i) => list.indexOf(c) === i);
+}
 const CATS = ['Lodging', 'Food', 'Transport', 'Activities', 'Groceries', 'Other'];
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const TRIP_SCREENS = ['balances', 'add', 'ledger', 'settle'];
@@ -16,8 +34,8 @@ const CAN_PICK_CONTACTS = typeof navigator !== 'undefined' && 'contacts' in navi
 // ---------- helpers ----------
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-let CUR = CONFIG.defaultCurrency || '$';
-const money = (c, cur = CUR) => (/[A-Z]$/.test(cur) ? cur + ' ' : cur) + (Math.abs(c) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+let CUR = toCode(CONFIG.defaultCurrency);
+const money = (c, cur = CUR) => { try { return fmt(toCode(cur)).format(Math.abs(c) / 100); } catch { return toCode(cur) + ' ' + (Math.abs(c) / 100).toFixed(2); } };
 const signed = (c) => (c > 0 ? '+' : c < 0 ? '−' : '') + money(c);
 const pad2 = (n) => (n < 10 ? '0' : '') + n;
 const todayISO = () => { const d = new Date(); return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); };
@@ -58,7 +76,7 @@ const pref = {
 };
 
 // ---------- state ----------
-const blankForm = () => ({ amt: '', desc: '', date: todayISO(), cat: 'Food', payer: '', excl: {}, mode: 'equal', custom: {} });
+const blankForm = () => ({ amt: '', desc: '', date: todayISO(), cat: 'Food', payer: '', excl: {}, mode: 'equal', custom: {}, cur: '', rate: '', rateFor: '', rateDate: '', rateManual: false, curOpen: false });
 const blankReceipt = () => ({ status: 'idle', blobUrl: '', ref: '', note: '' });
 
 const state = {
@@ -137,23 +155,33 @@ function av(id, size = 'md') {
 function evalForm() {
   const fm = state.form;
   const members = formIds();
-  const amt = cents(fm.amt);
+  const cur = fm.cur || CUR;
+  const foreign = cur !== CUR;
+  const rate = foreign ? Number(String(fm.rate).replace(/[^0-9.]/g, '')) : 1;
+  const hasRate = !foreign || (Number.isFinite(rate) && rate > 0);
+  const origAmt = cents(fm.amt);                       // in the currency spent
+  const amt = hasRate ? convert(origAmt, rate) : 0;    // in the trip's ledger currency
   const inc = members.filter((id) => !fm.excl[id]);
   let shares = {};
+  let origShares = {};
   if (fm.mode === 'equal') shares = splitEqual(amt, inc);
-  else inc.forEach((id) => { shares[id] = cents(fm.custom[id]); });
-  const assigned = inc.reduce((a, id) => a + (shares[id] || 0), 0);
+  else {
+    inc.forEach((id) => { origShares[id] = cents(fm.custom[id]); });
+    shares = hasRate ? convertShares(origShares, rate, amt) : {};
+  }
+  const assigned = inc.reduce((a, id) => a + (origShares[id] || 0), 0);
   let msg = '';
   let valid = false;
   if (!members.length) msg = 'Add who paid to get started.';
   else if (!fm.payer || !members.includes(fm.payer)) msg = 'Choose who paid.';
-  else if (!amt) msg = 'Enter an amount.';
+  else if (!origAmt) msg = 'Enter an amount.';
+  else if (!hasRate) msg = state.fxBusy ? `Getting the ${cur} → ${CUR} rate…` : `Enter the ${cur} → ${CUR} exchange rate.`;
   else if (!inc.length) msg = 'Choose at least one person to share this cost.';
-  else if (fm.mode === 'exact' && assigned !== amt) msg = assigned < amt ? `${money(amt - assigned)} of ${money(amt)} still to assign` : `${money(assigned - amt)} more than the total`;
+  else if (fm.mode === 'exact' && assigned !== origAmt) msg = assigned < origAmt ? `${money(origAmt - assigned, cur)} of ${money(origAmt, cur)} still to assign` : `${money(assigned - origAmt, cur)} more than the total`;
   else if (!fm.desc.trim()) msg = 'Add a short description.';
   else if (!/^\d{4}-\d{2}-\d{2}$/.test(fm.date)) msg = 'Pick a date.';
   else { valid = true; msg = `Ready. ${nameOf(fm.payer)} paid; ${inc.length === members.length && members.length > 1 ? 'shared by everyone' : 'shared by ' + joinNames(inc)}.`; }
-  return { amt, inc, shares, valid, msg };
+  return { amt, origAmt, cur, foreign, rate: foreign ? rate : 1, hasRate, inc, shares, valid, msg };
 }
 
 // ---------- rendering ----------
@@ -166,7 +194,7 @@ function render() {
 
   const trip = curTrip();
   if (TRIP_SCREENS.includes(state.screen) && !trip && !state.loading) state.screen = 'trips';
-  CUR = trip?.currency || CONFIG.defaultCurrency || '$';
+  CUR = toCode(trip?.currency || CONFIG.defaultCurrency);
   const isTripScreen = TRIP_SCREENS.includes(state.screen);
 
   let body;
@@ -352,8 +380,15 @@ function tripEditHtml() {
       <label class="field"><span class="lbl">Starts</span><input data-tf="start" type="date" value="${esc(f.start)}"></label>
       <label class="field"><span class="lbl">Ends</span><input data-tf="end" type="date" value="${esc(f.end)}"></label>
     </div>
-    <div class="field"><span class="lbl">Currency</span>
-      <div class="wrap">${CURRENCIES.map((c) => chip(esc(c), 'tripCurrency', { c }, f.currency === c)).join('')}</div>
+    <div class="field"><span class="lbl">Trip currency</span>
+      <span class="small muted">Balances and settle-up are in this currency. Expenses in other currencies are converted at that day’s rate.</span>
+      ${es.length ? `<span class="strong">${esc(f.currency)} · ${esc(curName(f.currency))}</span><span class="small muted">Locked: this trip already has expenses.</span>`
+        : `<select data-tf="currency" aria-label="Trip currency">${ALL_CURRENCIES.map((c) => `<option value="${c}" ${f.currency === c ? 'selected' : ''}>${c} · ${esc(curName(c))}</option>`).join('')}</select>`}
+    </div>
+    <div class="field"><span class="lbl">Currencies you’ll spend</span>
+      <span class="small muted">These are offered first when adding an expense.</span>
+      <div class="wrap">${Array.from(new Set([...COMMON_CURRENCIES, ...f.currencies])).map((c) => chip(esc(c), 'tripCur', { c }, f.currencies.includes(c) || c === f.currency, `aria-label="${esc(curName(c))}"`)).join('')}</div>
+      <select data-action-change="tripCurAdd" aria-label="Add another currency"><option value="">Add another…</option>${ALL_CURRENCIES.filter((c) => !COMMON_CURRENCIES.includes(c) && !f.currencies.includes(c)).map((c) => `<option value="${c}">${c} · ${esc(curName(c))}</option>`).join('')}</select>
     </div>
     <button type="button" class="btn primary big" data-action="saveTrip">${trip ? 'Save trip' : 'Create trip'}</button>
 
@@ -500,6 +535,13 @@ function rowSub(e) {
   const everyone = sharers.length === all.length && all.length > 2;
   return `Paid by ${nameOf(e.payer)} · ${everyone ? 'split by everyone' : 'split by ' + joinNames(sharers)}${e.mode === 'exact' ? ' (custom)' : ''}`;
 }
+// Amount as spent, plus the trip-currency figure when it was a different currency.
+function amountHtml(e) {
+  if (e.origCurrency && e.origCurrency !== CUR && e.origAmount != null) {
+    return `<span class="amt-stack"><span class="strong num">${money(e.origAmount, e.origCurrency)}</span><span class="small muted num">${money(e.amount)}</span></span>`;
+  }
+  return `<span class="strong num">${money(e.amount)}</span>`;
+}
 const rowTitle = (e) => (e.kind === 'payment' ? `${nameOf(e.from)} → ${nameOf(e.to)}` : e.desc);
 
 function balancesHtml() {
@@ -526,7 +568,7 @@ function balancesHtml() {
       <button class="btn" data-action="go" data-screen="settle">Open settle up</button>
     </div>` : '<div class="card"><span class="strong">Everyone is square right now.</span></div>'}
     <div class="section-head"><h2>Recent</h2><button class="link" data-action="go" data-screen="ledger">See full ledger</button></div>
-    ${recent.map((e) => `<div class="card row-compact"><div class="grow"><span class="strong">${esc(rowTitle(e))}</span><span class="small muted">${esc(rowSub(e))}</span></div><span class="strong num">${money(e.amount)}</span></div>`).join('')}
+    ${recent.map((e) => `<div class="card row-compact"><div class="grow"><span class="strong">${esc(rowTitle(e))}</span><span class="small muted">${esc(rowSub(e))}</span></div>${amountHtml(e)}</div>`).join('')}
   </div>`;
 }
 
@@ -551,11 +593,67 @@ function pickerHtml(forWhat) {
   </div>`;
 }
 
+function defaultCurrency() {
+  const trip = curTrip();
+  const last = pref.get('lastCur:' + state.tripId) || pref.get('lastCur');
+  const allowed = tripCurrencies(trip);
+  return last && (allowed.includes(last) || ALL_CURRENCIES.includes(last)) ? last : CUR;
+}
+function fxNote() {
+  const fm = state.form;
+  if (state.fxBusy) return 'Getting rate…';
+  if (state.fxError && !fm.rate) return 'Couldn’t get the rate. Type it in.';
+  if (fm.rateManual) return 'Your rate';
+  return fm.rateDate ? `Rate for ${fmtDay(fm.rateDate)}` : '';
+}
+function fxConvText() {
+  const r = evalForm();
+  if (!r.foreign || !r.origAmt || !r.hasRate) return '';
+  return `= ${money(r.amt)} in ${CUR}`;
+}
+// Fetch the day's rate when the currency or date changes (unless you typed your own rate).
+let fxSeq = 0;
+async function ensureRate() {
+  const fm = state.form;
+  const cur = fm.cur || CUR;
+  if (cur === CUR || !store?.fxRate) return;
+  const key = `${cur}:${CUR}:${fm.date}`;
+  if (fm.rateFor === key || fm.rateManual) return;
+  fm.rateFor = key;
+  const seq = ++fxSeq;
+  state.fxBusy = true; state.fxError = false;
+  try {
+    const r = await store.fxRate(cur, CUR, fm.date || todayISO());
+    if (seq !== fxSeq || state.form !== fm) return;
+    fm.rate = String(r.rate);
+    fm.rateDate = r.date;
+  } catch {
+    if (seq !== fxSeq) return;
+    state.fxError = true;
+    fm.rateFor = '';
+  }
+  state.fxBusy = false;
+  refreshFx();
+}
+// Update the rate row without a full re-render (keeps the keyboard open while typing).
+function refreshFx() {
+  const fm = state.form;
+  const rateEl = $('#fx-rate');
+  if (rateEl && document.activeElement !== rateEl) rateEl.value = fm.rate;
+  const note = $('#fx-note'); if (note) note.textContent = fxNote();
+  const conv = $('#fx-conv'); if (conv) conv.textContent = fxConvText();
+  updateAddLive();
+}
+
 function addHtml() {
   const fm = state.form;
   const members = formIds();
   // New expenses default to you as the payer (or the trip's first person if you're not set up).
   if (!state.editId && (!fm.payer || !members.includes(fm.payer))) fm.payer = myPartyId() || members[0] || '';
+  // ...and to the last currency used on this trip (or the trip's own currency).
+  if (!fm.cur) fm.cur = defaultCurrency();
+  const fmCur = fm.cur;
+  ensureRate();
   const picker = state.picker || (!members.length ? 'payer' : null);
   const r = state.receipt;
   const img = r.blobUrl || receiptSrc(r.ref);
@@ -579,10 +677,29 @@ function addHtml() {
       </label>
     </div>
 
-    <label class="card amount">
-      <span class="lbl">Amount</span>
-      <span class="amount-row"><span class="cur">${esc(CUR)}</span><input data-field="amt" type="text" inputmode="decimal" autocomplete="off" placeholder="0.00" value="${esc(fm.amt)}"></span>
-    </label>
+    <div class="card amount">
+      <label class="lbl" for="amt-input">Amount</label>
+      <span class="amount-row">
+        <button type="button" class="cur-btn" data-action="toggleCur" aria-expanded="${!!fm.curOpen}" aria-label="Currency: ${esc(curName(fmCur))}. Change">${esc(fmCur)}${ICON.chevron}</button>
+        <input id="amt-input" data-field="amt" type="text" inputmode="decimal" autocomplete="off" placeholder="0.00" value="${esc(fm.amt)}">
+      </span>
+      ${fm.curOpen ? `<div class="cur-pick">
+        <div class="wrap">${tripCurrencies(curTrip()).map((c) => chip(esc(c), 'pickCur', { c }, fmCur === c, `aria-label="${esc(curName(c))}"`)).join('')}</div>
+        <label class="field"><span class="lbl">Other currency</span>
+          <select data-action-change="pickCurSelect" aria-label="Other currency">
+            <option value="">Choose…</option>
+            ${ALL_CURRENCIES.filter((c) => !tripCurrencies(curTrip()).includes(c)).map((c) => `<option value="${c}">${c} · ${esc(curName(c))}</option>`).join('')}
+          </select>
+        </label>
+      </div>` : ''}
+      ${fmCur !== CUR ? `<div class="fx-row">
+        <span class="small muted">1 ${esc(fmCur)} =</span>
+        <input id="fx-rate" data-field="rate" type="text" inputmode="decimal" autocomplete="off" aria-label="Exchange rate, ${esc(CUR)} per ${esc(fmCur)}" placeholder="${state.fxBusy ? '…' : 'rate'}" value="${esc(fm.rate)}">
+        <span class="small muted">${esc(CUR)}</span>
+        <span id="fx-note" class="small muted fx-note">${esc(fxNote())}</span>
+      </div>
+      <span id="fx-conv" class="strong fx-conv">${esc(fxConvText())}</span>` : ''}
+    </div>
 
     <label class="field"><span class="lbl">What was it?</span><input data-field="desc" type="text" maxlength="80" placeholder="e.g. Dinner at the harbor" value="${esc(fm.desc)}"></label>
     <label class="field"><span class="lbl">Date</span><input data-field="date" type="date" value="${esc(fm.date)}"></label>
@@ -620,6 +737,7 @@ function addHtml() {
 }
 
 function updateAddLive() {
+  const conv = $('#fx-conv'); if (conv) conv.textContent = fxConvText();
   const r = evalForm();
   const st = $('#add-status');
   if (st) { st.textContent = r.msg; st.classList.toggle('ok', r.valid); }
@@ -657,7 +775,7 @@ function ledgerHtml() {
       return `<div class="card entry">
         <button type="button" class="entry-head" data-action="toggle" data-id="${esc(e.id)}" aria-expanded="${open}">
           <span class="grow"><span class="small muted">${meta}</span><span class="strong">${esc(rowTitle(e))}</span><span class="small muted">${esc(rowSub(e))}</span></span>
-          <span class="entry-right"><span class="strong num">${money(e.amount)}</span><span class="dots">${dots}</span></span>
+          <span class="entry-right">${amountHtml(e)}<span class="dots">${dots}</span></span>
         </button>
         ${open ? `<div class="entry-body">
           ${rurl ? `<button type="button" class="link with-thumb" data-action="viewReceipt" data-url="${esc(rurl)}"><img src="${esc(rurl)}" alt="">View receipt</button>` : e.receipt ? '<span class="small muted">Loading receipt…</span>' : ''}
@@ -680,7 +798,7 @@ const addedBy = (email) => {
 
 // ----- settle -----
 function summaryText(trip, calc, tr, ids) {
-  const lines = [trip.name + ' — settle-up as of ' + fmtDay(todayISO()) + ':'];
+  const lines = [trip.name + ' — settle-up as of ' + fmtDay(todayISO()) + ` (amounts in ${CUR}):`];
   if (tr.length) tr.forEach((t) => lines.push(`• ${nameOf(t.from)} pays ${nameOf(t.to)} ${money(t.amount)}`));
   else lines.push('Everyone is square — no payments due.');
   lines.push('', 'Shared spending: ' + money(calc.total));
@@ -885,6 +1003,19 @@ async function chooseContact() {
   } catch { return null; }
 }
 
+function setFormCurrency(code) {
+  const fm = state.form;
+  fm.cur = code; fm.curOpen = false; fm.rateManual = false; fm.rateFor = ''; fm.rate = ''; fm.rateDate = '';
+  state.fxError = false;
+  const trip = curTrip();
+  if (trip && !tripCurrencies(trip).includes(code)) {
+    const updated = { ...trip, currencies: [...tripCurrencies(trip), code] };
+    replaceIn('trips', updated);
+    store.saveTrip(updated).catch(() => {});
+  }
+  render();
+}
+
 // ---------- actions ----------
 const actions = {
   go(d) {
@@ -904,23 +1035,35 @@ const actions = {
 
   // trips
   selectTrip(d) { selectTrip(d.id); state.screen = 'balances'; render(); },
-  newTrip() { state.tripForm = { id: null, name: '', start: '', end: '', currency: CONFIG.defaultCurrency || '$' }; state.screen = 'tripEdit'; render(); },
+  newTrip() { const c = toCode(CONFIG.defaultCurrency); state.tripForm = { id: null, name: '', start: '', end: '', currency: c, currencies: Array.from(new Set([c, 'USD', 'EUR'])) }; state.screen = 'tripEdit'; render(); },
   editTrip(d) {
     const t = state.data.trips.find((x) => x.id === d.id);
     if (!t) return;
-    state.tripForm = { id: t.id, name: t.name, start: t.start || '', end: t.end || '', currency: t.currency || '$' };
+    state.tripForm = { id: t.id, name: t.name, start: t.start || '', end: t.end || '', currency: toCode(t.currency), currencies: tripCurrencies(t) };
     state.screen = 'tripEdit';
     render();
   },
-  tripCurrency(d) { state.tripForm.currency = d.c; render(); },
+  tripCur(d) {
+    const f = state.tripForm;
+    if (d.c === f.currency) return; // the trip currency is always offered
+    f.currencies = f.currencies.includes(d.c) ? f.currencies.filter((c) => c !== d.c) : f.currencies.concat([d.c]);
+    render();
+  },
+  tripCurAdd(d) { const f = state.tripForm; if (d.value && !f.currencies.includes(d.value)) f.currencies = f.currencies.concat([d.value]); render(); },
+
+  // currency on an expense
+  toggleCur() { state.form.curOpen = !state.form.curOpen; render(); },
+  pickCur(d) { setFormCurrency(d.c); },
+  pickCurSelect(d) { if (d.value) setFormCurrency(d.value); },
   async saveTrip() {
     const f = state.tripForm;
     const name = f.name.trim();
     if (!name) { flash('Give the trip a name.'); return; }
     if (f.start && f.end && f.end < f.start) { flash('The end date is before the start date.'); return; }
     const old = state.data.trips.find((t) => t.id === f.id);
-    const trip = old ? { ...old, name, start: f.start, end: f.end, currency: f.currency }
-      : { id: uuid(), name, start: f.start, end: f.end, currency: f.currency, members: myPartyId() ? [myPartyId()] : [], createdAt: new Date().toISOString() };
+    const currencies = Array.from(new Set([f.currency, ...f.currencies]));
+    const trip = old ? { ...old, name, start: f.start, end: f.end, currency: f.currency, currencies }
+      : { id: uuid(), name, start: f.start, end: f.end, currency: f.currency, currencies, members: myPartyId() ? [myPartyId()] : [], createdAt: new Date().toISOString() };
     const before = snapshot();
     await commit(() => {
       replaceIn('trips', trip);
@@ -1012,7 +1155,7 @@ const actions = {
     const fm = state.form;
     if (d.mode === 'exact' && fm.mode !== 'exact') {
       const incl = formIds().filter((id) => !fm.excl[id]);
-      const eq = splitEqual(cents(fm.amt), incl);
+      const eq = splitEqual(cents(fm.amt), incl); // in the currency spent
       fm.custom = Object.fromEntries(incl.map((id) => [id, eq[id] ? (eq[id] / 100).toFixed(2) : '']));
     }
     fm.mode = d.mode;
@@ -1024,10 +1167,16 @@ const actions = {
     const members = formIds();
     state.editId = e.id;
     state.form = {
-      amt: (e.amount / 100).toFixed(2), desc: e.desc, date: e.date, cat: e.cat, payer: e.payer,
+      ...blankForm(),
+      amt: ((e.origAmount ?? e.amount) / 100).toFixed(2), desc: e.desc, date: e.date, cat: e.cat, payer: e.payer,
       excl: Object.fromEntries(members.filter((id) => !(e.shares[id] > 0)).map((id) => [id, true])),
       mode: e.mode === 'exact' ? 'exact' : 'equal',
-      custom: Object.fromEntries(Object.entries(e.shares).map(([id, c]) => [id, (c / 100).toFixed(2)])),
+      // Exact shares were stored converted; show them back in the currency spent.
+      custom: Object.fromEntries(Object.entries(e.shares).map(([id, c]) => [id, (c / (e.fxRate || 1) / 100).toFixed(2)])),
+      cur: e.origCurrency || CUR,
+      rate: e.fxRate ? String(e.fxRate) : '',
+      rateDate: e.fxDate || '',
+      rateFor: e.origCurrency ? `${e.origCurrency}:${CUR}:${e.date}` : '',
     };
     state.receipt = e.receipt ? { status: 'done', blobUrl: '', ref: e.receipt, note: 'Saved with this expense.' } : blankReceipt();
     state.picker = null;
@@ -1047,7 +1196,11 @@ const actions = {
       ...(old || { id: uuid(), createdAt: new Date().toISOString() }),
       tripId: state.tripId, kind: 'expense', desc: fm.desc.trim(), cat: fm.cat, date: fm.date,
       amount: r.amt, payer: fm.payer, shares, mode: fm.mode, receipt: state.receipt.ref || '',
+      origAmount: r.foreign ? r.origAmt : null, origCurrency: r.foreign ? r.cur : null,
+      fxRate: r.foreign ? r.rate : null, fxDate: r.foreign ? (fm.rateManual ? fm.date : fm.rateDate || fm.date) : null,
     };
+    pref.set('lastCur:' + state.tripId, r.cur);
+    pref.set('lastCur', r.cur);
     if (state.receipt.blobUrl) URL.revokeObjectURL(state.receipt.blobUrl);
     const trip = curTrip();
     const joining = [fm.payer, ...Object.keys(shares)].filter((id, i, a) => id && a.indexOf(id) === i && !(trip.members || []).includes(id));
@@ -1061,7 +1214,7 @@ const actions = {
       state.editId = null;
       state.picker = null;
       state.screen = old ? 'ledger' : 'balances';
-    }, async () => { if (tripAfter) await store.saveTrip(tripAfter); await store.saveEntry(entry); }, () => { state.data = before; }, old ? 'Changes saved' : `Added “${entry.desc}” · ${money(entry.amount)}`);
+    }, async () => { if (tripAfter) await store.saveTrip(tripAfter); await store.saveEntry(entry); }, () => { state.data = before; }, old ? 'Changes saved' : `Added “${entry.desc}” · ${r.foreign ? money(r.origAmt, r.cur) + ' (' + money(entry.amount) + ')' : money(entry.amount)}`);
   },
 
   // ledger
@@ -1270,8 +1423,11 @@ async function handleReceipt(file) {
   else if (!data) note = 'Couldn’t read this receipt. Enter the details below.';
   else if (!got.length) note = 'Nothing readable found. Enter the details below.';
   else note = `Filled in ${got.join(', ')}. Check before saving.`;
-  const code = CODES[CUR];
-  if (data && typeof data.currency === 'string' && code && data.currency.toUpperCase() !== code) note += ` Receipt is in ${data.currency.toUpperCase()}; convert if needed.`;
+  const rc = data && typeof data.currency === 'string' ? data.currency.toUpperCase() : '';
+  if (rc && ALL_CURRENCIES.includes(rc) && rc !== (state.form.cur || CUR)) {
+    patch.cur = rc; patch.rateManual = false; patch.rateFor = ''; patch.rate = '';
+    note += ` Currency set to ${rc}.`;
+  } else if (rc && !ALL_CURRENCIES.includes(rc)) note += ` Receipt is in ${rc}, which can’t be converted automatically.`;
   if (!ref) note += ' The photo couldn’t be saved.';
   Object.assign(state.form, patch);
   state.receipt = { ...state.receipt, status: 'done', ref, note };
@@ -1318,6 +1474,8 @@ document.addEventListener('input', (ev) => {
   if (ds.field) {
     if (ds.field === 'custom') state.form.custom[ds.id] = el.value;
     else state.form[ds.field] = el.value;
+    if (ds.field === 'rate') { state.form.rateManual = true; const n = $('#fx-note'); if (n) n.textContent = fxNote(); }
+    if (ds.field === 'date') ensureRate();
     updateAddLive();
   } else if (ds.np) state.newPerson[ds.np] = el.value;
   else if (ds.auth) state[ds.auth] = el.value;
@@ -1343,7 +1501,10 @@ document.addEventListener('change', (ev) => {
     const file = ev.target.files && ev.target.files[0];
     ev.target.value = '';
     handleReceipt(file);
+    return;
   }
+  const act = ev.target.dataset && ev.target.dataset.actionChange;
+  if (act && actions[act]) actions[act]({ value: ev.target.value });
 });
 
 // Default the payer to whoever paid last on this trip (or the first person).

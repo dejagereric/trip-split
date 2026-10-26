@@ -35,3 +35,11 @@ assert.deepEqual(after.net, { A: 0, B: 0, C: 0 });
 assert.equal(minimalTransfers(after.net, IDS).length, 0);
 
 console.log('logic tests passed');
+
+// currency conversion
+import { convert, convertShares } from '../js/logic.js';
+assert.equal(convert(9000, 1.1237), 10113);
+const cs = convertShares({ A: 3333, B: 3333, C: 3334 }, 1.1237, convert(10000, 1.1237));
+assert.equal(Object.values(cs).reduce((a, b) => a + b, 0), 11237);
+assert.deepEqual(convertShares({ A: 5000 }, 0.5, 2500), { A: 2500 });
+console.log('currency tests passed');
