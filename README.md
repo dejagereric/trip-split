@@ -64,9 +64,10 @@ Demo mode is per-phone. To have everyone's phones share trips and to read receip
    supabase login
    supabase link --project-ref <your-project-ref>
    supabase secrets set ANTHROPIC_API_KEY=sk-ant-...
-   supabase functions deploy extract-receipt
+   supabase functions deploy extract-receipt --no-verify-jwt
    ```
-4. **Project Settings → API**: copy the *Project URL* and the *anon public* key into `supabaseUrl` and `supabaseAnonKey` in `js/config.js`. Bump `VERSION` in `sw.js`, then commit and push.
+   `--no-verify-jwt` is needed because the new `sb_publishable_…` keys aren't JWTs. The function guards itself instead: it only answers requests from a group that has at least one trip.
+4. **Project Settings → API Keys**: copy the *Project URL* and the *publishable* key (or legacy *anon* key) into `supabaseUrl` and `supabaseAnonKey` in `js/config.js`. Bump `VERSION` in `sw.js`, then commit and push.
 5. Open the app and tap **Create our group**. Send the resulting link (it ends in `#group=…`) to the people you travel with. Everyone opens that link and adds it to their home screen. The same link covers every trip.
 
 The app checks for changes every 15 seconds while open, and whenever it comes back to the foreground.

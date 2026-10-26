@@ -49,6 +49,20 @@ Deno.serve(async (req) => {
   const key = Deno.env.get('ANTHROPIC_API_KEY');
   if (!key) return json({ error: 'not_configured' }, 500);
 
+  // Deployed with --no-verify-jwt (publishable keys aren't JWTs), so only answer callers
+  // whose group actually has a trip. Stops strangers from spending the API credit.
+  const groupId = req.headers.get('x-group-id') ?? '';
+  if (!/^[A-Za-z0-9_-]{16,64}$/.test(groupId)) return json({ error: 'unauthorized' }, 401);
+  const sbUrl = Deno.env.get('SUPABASE_URL');
+  const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+  if (sbUrl && serviceKey) {
+    const check = await fetch(`${sbUrl}/rest/v1/trips?select=id&limit=1&group_id=eq.${encodeURIComponent(groupId)}`, {
+      headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}` },
+    });
+    const rows = check.ok ? await check.json() : [];
+    if (!Array.isArray(rows) || !rows.length) return json({ error: 'unauthorized' }, 401);
+  }
+
   let body: { image?: string; mediaType?: string; year?: number };
   try { body = await req.json(); } catch { return json({ error: 'bad_request' }, 400); }
 
