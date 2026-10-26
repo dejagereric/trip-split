@@ -26,7 +26,7 @@ Do these in order (the DNS record must exist before GitHub switches addresses):
 1. [x] GoDaddy DNS: add record type `CNAME`, name `trips`, value `dejagereric.github.io`, TTL default.
 2. [x] Wait for DNS to take effect (minutes, up to an hour).
 3. [x] GitHub repo → Settings → Pages → Custom domain: `trips.ericdejager.com` → Save. GitHub adds a `CNAME` file to the repo.
-4. [ ] Tick **Enforce HTTPS** once the certificate is ready. (Oct 26: the site serves over http and GitHub is issuing the certificate automatically. If it's still unavailable after a few hours, remove and re-add the custom domain.)
+4. [x] **Enforce HTTPS** is on (Oct 26).
 5. [ ] Optional: verify ericdejager.com under GitHub account → Settings → Pages (a TXT record).
 6. [x] Claude: confirmed the site answers at the new address, and updated the README.
 
