@@ -1,14 +1,21 @@
-// Two backends with the same interface:
-//   mode, list(), add(entry), remove(id), uploadReceipt(blob) -> ref, receiptUrl(ref), extract(blob) -> data|null
-// local: this browser only (localStorage). cloud: Supabase table + storage + edge function.
+// Two backends with the same interface. All data belongs to one "group" (you and the
+// people you travel with); a group holds many trips, a shared list of people, and the
+// expenses of each trip.
+//
+//   mode
+//   load()                     -> { trips, parties, entries }
+//   saveTrip(t)  deleteTrip(id)        (deleting a trip deletes its expenses)
+//   saveParty(p) deleteParty(id)
+//   saveEntry(e) deleteEntry(id)
+//   saveMany({ trips, parties, entries })
+//   uploadReceipt(blob) -> ref   receiptUrl(ref)   extract(blob) -> data|null
+//   clear()  (local only)
 
 const SUPABASE_JS = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/+esm';
 
-export async function createStore(config, tripId) {
-  if (config.supabaseUrl && config.supabaseAnonKey && tripId) {
-    return cloudStore(config, tripId);
-  }
-  return localStore(tripId || 'local');
+export async function createStore(config, groupId) {
+  if (config.supabaseUrl && config.supabaseAnonKey && groupId) return cloudStore(config, groupId);
+  return localStore(groupId || 'local');
 }
 
 function blobToDataURL(blob) {
@@ -20,22 +27,39 @@ function blobToDataURL(blob) {
   });
 }
 
-// ---------- local ----------
-function localStore(tripId) {
-  const key = 'tripsplit:entries:' + tripId;
+const upsertById = (list, item) => {
+  const i = list.findIndex((x) => x.id === item.id);
+  if (i >= 0) { const copy = list.slice(); copy[i] = item; return copy; }
+  return list.concat([item]);
+};
+
+// ---------- local (this browser only) ----------
+function localStore(groupId) {
+  const key = 'tripsplit:v2:' + groupId;
+  const empty = () => ({ trips: [], parties: [], entries: [] });
   const read = () => {
-    try { return JSON.parse(localStorage.getItem(key) || '[]'); } catch { return []; }
+    try { return { ...empty(), ...JSON.parse(localStorage.getItem(key) || '{}') }; } catch { return empty(); }
   };
-  const write = (list) => {
-    try { localStorage.setItem(key, JSON.stringify(list)); }
-    catch { throw new Error('storage_full'); }
+  const write = (d) => {
+    try { localStorage.setItem(key, JSON.stringify(d)); } catch { throw new Error('storage_full'); }
   };
+  const update = (fn) => { const d = read(); fn(d); write(d); };
   return {
     mode: 'local',
-    async list() { return read(); },
-    async add(entry) { write(read().concat([entry])); },
-    async addMany(entries) { write(read().concat(entries)); },
-    async remove(id) { write(read().filter((e) => e.id !== id)); },
+    async load() { return read(); },
+    async saveTrip(t) { update((d) => { d.trips = upsertById(d.trips, t); }); },
+    async deleteTrip(id) { update((d) => { d.trips = d.trips.filter((t) => t.id !== id); d.entries = d.entries.filter((e) => e.tripId !== id); }); },
+    async saveParty(p) { update((d) => { d.parties = upsertById(d.parties, p); }); },
+    async deleteParty(id) { update((d) => { d.parties = d.parties.filter((p) => p.id !== id); }); },
+    async saveEntry(e) { update((d) => { d.entries = upsertById(d.entries, e); }); },
+    async deleteEntry(id) { update((d) => { d.entries = d.entries.filter((e) => e.id !== id); }); },
+    async saveMany(more) {
+      update((d) => {
+        (more.parties || []).forEach((p) => { d.parties = upsertById(d.parties, p); });
+        (more.trips || []).forEach((t) => { d.trips = upsertById(d.trips, t); });
+        (more.entries || []).forEach((e) => { d.entries = upsertById(d.entries, e); });
+      });
+    },
     async clear() { try { localStorage.removeItem(key); } catch {} },
     // Local mode keeps a small JPEG inline (localStorage holds roughly 5 MB).
     async uploadReceipt(blob) { return blobToDataURL(blob); },
@@ -45,70 +69,56 @@ function localStore(tripId) {
 }
 
 // ---------- cloud (Supabase) ----------
-async function cloudStore(config, tripId) {
+async function cloudStore(config, groupId) {
   const { createClient } = await import(SUPABASE_JS);
-  // The trip id travels as a header; row-level security only returns rows for that trip.
+  // The group id travels as a header; row-level security only returns that group's rows.
   const sb = createClient(config.supabaseUrl, config.supabaseAnonKey, {
     auth: { persistSession: false },
-    global: { headers: { 'x-trip-id': tripId } },
+    global: { headers: { 'x-group-id': groupId } },
   });
+  const must = ({ data, error }) => { if (error) throw error; return data; };
 
-  const toRow = (e) => ({
-    id: e.id,
-    trip_id: tripId,
-    kind: e.kind,
-    description: e.desc ?? null,
-    category: e.cat ?? null,
-    spent_on: e.date,
-    amount_cents: e.amount,
-    payer: e.payer ?? null,
-    shares: e.shares ?? {},
-    split_mode: e.mode ?? null,
-    from_party: e.from ?? null,
-    to_party: e.to ?? null,
-    receipt_path: e.receipt || null,
-    created_at: e.createdAt,
+  const tripRow = (t) => ({ id: t.id, group_id: groupId, name: t.name, currency: t.currency, start_on: t.start || null, end_on: t.end || null, member_ids: t.members || [], created_at: t.createdAt });
+  const tripFrom = (r) => ({ id: r.id, name: r.name, currency: r.currency, start: r.start_on || '', end: r.end_on || '', members: r.member_ids || [], createdAt: r.created_at });
+  const partyRow = (p) => ({ id: p.id, group_id: groupId, name: p.name, phone: p.phone || null, email: p.email || null, color: p.color ?? 0, created_at: p.createdAt });
+  const partyFrom = (r) => ({ id: r.id, name: r.name, phone: r.phone || '', email: r.email || '', color: r.color ?? 0, createdAt: r.created_at });
+  const entryRow = (e) => ({
+    id: e.id, group_id: groupId, trip_id: e.tripId, kind: e.kind,
+    description: e.desc ?? null, category: e.cat ?? null, spent_on: e.date, amount_cents: e.amount,
+    payer: e.payer ?? null, shares: e.shares ?? {}, split_mode: e.mode ?? null,
+    from_party: e.from ?? null, to_party: e.to ?? null, receipt_path: e.receipt || null, created_at: e.createdAt,
   });
-  const fromRow = (r) => ({
-    id: r.id,
-    kind: r.kind,
-    desc: r.description ?? '',
-    cat: r.category ?? 'Other',
-    date: r.spent_on,
-    amount: r.amount_cents,
-    payer: r.payer,
-    shares: r.shares || {},
-    mode: r.split_mode,
-    from: r.from_party,
-    to: r.to_party,
-    receipt: r.receipt_path || '',
-    createdAt: r.created_at,
+  const entryFrom = (r) => ({
+    id: r.id, tripId: r.trip_id, kind: r.kind, desc: r.description ?? '', cat: r.category ?? 'Other',
+    date: r.spent_on, amount: r.amount_cents, payer: r.payer, shares: r.shares || {}, mode: r.split_mode,
+    from: r.from_party, to: r.to_party, receipt: r.receipt_path || '', createdAt: r.created_at,
   });
 
   return {
     mode: 'cloud',
-    async list() {
-      const { data, error } = await sb.from('entries').select('*').eq('trip_id', tripId).order('created_at');
-      if (error) throw error;
-      return (data || []).map(fromRow);
+    async load() {
+      const [trips, parties, entries] = await Promise.all([
+        sb.from('trips').select('*').eq('group_id', groupId).then(must),
+        sb.from('parties').select('*').eq('group_id', groupId).then(must),
+        sb.from('entries').select('*').eq('group_id', groupId).order('created_at').then(must),
+      ]);
+      return { trips: trips.map(tripFrom), parties: parties.map(partyFrom), entries: entries.map(entryFrom) };
     },
-    async add(entry) {
-      const { error } = await sb.from('entries').insert(toRow(entry));
-      if (error) throw error;
-    },
-    async addMany(entries) {
-      const { error } = await sb.from('entries').insert(entries.map(toRow));
-      if (error) throw error;
-    },
-    async remove(id) {
-      const { error } = await sb.from('entries').delete().eq('id', id);
-      if (error) throw error;
+    async saveTrip(t) { must(await sb.from('trips').upsert(tripRow(t))); },
+    async deleteTrip(id) { must(await sb.from('trips').delete().eq('id', id)); },
+    async saveParty(p) { must(await sb.from('parties').upsert(partyRow(p))); },
+    async deleteParty(id) { must(await sb.from('parties').delete().eq('id', id)); },
+    async saveEntry(e) { must(await sb.from('entries').upsert(entryRow(e))); },
+    async deleteEntry(id) { must(await sb.from('entries').delete().eq('id', id)); },
+    async saveMany(more) {
+      if (more.parties?.length) must(await sb.from('parties').upsert(more.parties.map(partyRow)));
+      if (more.trips?.length) must(await sb.from('trips').upsert(more.trips.map(tripRow)));
+      if (more.entries?.length) must(await sb.from('entries').upsert(more.entries.map(entryRow)));
     },
     async clear() {},
     async uploadReceipt(blob) {
-      const path = tripId + '/' + crypto.randomUUID() + '.jpg';
-      const { error } = await sb.storage.from('receipts').upload(path, blob, { contentType: blob.type || 'image/jpeg' });
-      if (error) throw error;
+      const path = groupId + '/' + crypto.randomUUID() + '.jpg';
+      must(await sb.storage.from('receipts').upload(path, blob, { contentType: blob.type || 'image/jpeg' }));
       return path;
     },
     receiptUrl(ref) {

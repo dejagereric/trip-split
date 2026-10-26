@@ -3,36 +3,40 @@ import { cents, splitEqual, computeBalances, minimalTransfers } from './logic.js
 import { createStore } from './store.js';
 
 // ---------- constants ----------
-const COLORS = [
-  { bg: '#3346C8', fg: '#FFFFFF' },
-  { bg: '#F2A33A', fg: '#1B1A17' },
-  { bg: '#13806F', fg: '#FFFFFF' },
-];
-const PARTIES = CONFIG.parties.slice(0, 3).map((p, i) => ({ ...p, ...COLORS[i] }));
-const IDS = PARTIES.map((p) => p.id);
-const P = Object.fromEntries(PARTIES.map((p) => [p.id, p]));
+const PALETTE = ['#3346C8', '#F2A33A', '#13806F', '#B5365B', '#6C47C2', '#8DB33A', '#1F6FB2', '#C05621'];
+const CURRENCIES = ['$', '€', '£', '¥', '₹', 'A$', 'C$', 'CHF'];
+const CODES = { '$': 'USD', '€': 'EUR', '£': 'GBP', '¥': 'JPY', '₹': 'INR', 'A$': 'AUD', 'C$': 'CAD', 'CHF': 'CHF' };
 const CATS = ['Lodging', 'Food', 'Transport', 'Activities', 'Groceries', 'Other'];
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-const TITLES = { balances: 'Balances', add: 'Add expense', ledger: 'Ledger', settle: 'Settle up' };
-const CUR = CONFIG.currency || '$';
-const CODES = { '$': 'USD', '€': 'EUR', '£': 'GBP' };
+const TRIP_SCREENS = ['balances', 'add', 'ledger', 'settle'];
+const TITLES = { balances: 'Balances', add: 'Add expense', ledger: 'Ledger', settle: 'Settle up', trips: 'Trips', tripEdit: 'Trip', people: 'People', personEdit: 'Person' };
 const CLOUD_CONFIGURED = !!(CONFIG.supabaseUrl && CONFIG.supabaseAnonKey);
+const CAN_PICK_CONTACTS = typeof navigator !== 'undefined' && 'contacts' in navigator && typeof navigator.contacts?.select === 'function';
 
 // ---------- helpers ----------
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const money = (c) => CUR + (Math.abs(c) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+let CUR = CONFIG.defaultCurrency || '$';
+const money = (c, cur = CUR) => (/[A-Z]$/.test(cur) ? cur + ' ' : cur) + (Math.abs(c) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const signed = (c) => (c > 0 ? '+' : c < 0 ? '−' : '') + money(c);
 const pad2 = (n) => (n < 10 ? '0' : '') + n;
 const todayISO = () => { const d = new Date(); return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); };
 const fmtDay = (iso) => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso || ''); return m ? MONTHS[+m[2] - 1] + ' ' + +m[3] : ''; };
-const nameOf = (id) => (P[id] ? P[id].name : '?');
-const initial = (id) => (String(nameOf(id)).trim().charAt(0) || '?').toUpperCase();
-const av = (id, size = 'md') => P[id]
-  ? `<span class="av av-${size}" style="background:${P[id].bg};color:${P[id].fg}" aria-hidden="true">${esc(initial(id))}</span>`
-  : '';
-const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : 'id-' + Date.now() + '-' + Math.random().toString(16).slice(2));
-const joinNames = (ids) => ids.map(nameOf).join(' & ');
+const fmtRange = (a, b) => (a && b ? `${fmtDay(a)} – ${fmtDay(b)}` : a ? 'From ' + fmtDay(a) : b ? 'Until ' + fmtDay(b) : '');
+const uuid = () => (crypto.randomUUID ? crypto.randomUUID()
+  : '10000000-1000-4000-8000-100000000000'.replace(/[018]/g, (c) => (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16)));
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+function fgFor(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  const ch = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); });
+  return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2] > 0.3 ? '#1B1A17' : '#FFFFFF';
+}
+const initials = (name) => {
+  const w = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (!w.length) return '?';
+  return (w.length > 1 ? w[0][0] + w[w.length - 1][0] : w[0][0]).toUpperCase();
+};
 
 const ICON = {
   balances: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v16M7 20h10M5 8h14M5 8l-3 6a3 3 0 0 0 6 0zM19 8l-3 6a3 3 0 0 0 6 0z"/></svg>',
@@ -43,61 +47,98 @@ const ICON = {
   camera: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>',
   receipt: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2zM9 8h6M9 12h6M9 16h4"/></svg>',
   arrow: '<svg viewBox="0 0 28 20" aria-hidden="true"><path d="M2 10h22M18 4l6 6-6 6"/></svg>',
+  chevron: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>',
+  back: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>',
+  contacts: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="9" r="3.5"/><path d="M5.5 19a6.5 6.5 0 0 1 13 0"/></svg>',
 };
 
-// ---------- trip id (kept in the URL hash, never in the repo) ----------
-function readTripId() {
-  const m = /(?:^|[#&])trip=([A-Za-z0-9_-]{16,64})/.exec(location.hash);
-  if (m) { try { localStorage.setItem('tripsplit:lastTrip', m[1]); } catch {} return m[1]; }
-  try { return localStorage.getItem('tripsplit:lastTrip') || ''; } catch { return ''; }
+// ---------- group id (kept in the URL hash, never in the repo) ----------
+function readGroupId() {
+  const m = /(?:^|[#&])group=([A-Za-z0-9_-]{16,64})/.exec(location.hash);
+  if (m) { try { localStorage.setItem('tripsplit:lastGroup', m[1]); } catch {} return m[1]; }
+  try { return localStorage.getItem('tripsplit:lastGroup') || ''; } catch { return ''; }
 }
-function newTripId() {
+function newGroupId() {
   const a = new Uint8Array(18);
   crypto.getRandomValues(a);
   return Array.from(a, (x) => 'abcdefghijklmnopqrstuvwxyz0123456789'[x % 36]).join('');
 }
+const pref = {
+  get(k) { try { return localStorage.getItem('tripsplit:' + k) || ''; } catch { return ''; } },
+  set(k, v) { try { localStorage.setItem('tripsplit:' + k, v); } catch {} },
+};
 
 // ---------- state ----------
-const blankForm = () => ({ amt: '', desc: '', date: todayISO(), cat: 'Food', payer: IDS[0], inc: Object.fromEntries(IDS.map((id) => [id, true])), mode: 'equal', custom: Object.fromEntries(IDS.map((id) => [id, ''])) });
+const blankForm = () => ({ amt: '', desc: '', date: todayISO(), cat: 'Food', payer: '', excl: {}, mode: 'equal', custom: {} });
 const blankReceipt = () => ({ status: 'idle', blobUrl: '', ref: '', note: '' });
 
 const state = {
   screen: 'balances',
-  entries: [],
+  tripId: '',
+  data: { trips: [], parties: [], entries: [] },
   filter: 'all',
   openId: null,
   form: blankForm(),
+  editId: null,
+  picker: null, // 'payer' | 'share' while the "add someone" panel is open
+  newPerson: { name: '', phone: '', email: '' },
   receipt: blankReceipt(),
+  tripForm: null,
+  personForm: null,
   viewUrl: '',
   toast: '',
   loading: true,
   error: '',
-  needsTrip: false,
+  needsGroup: false,
 };
 let store = null;
 let toastTimer = 0;
 
-function sorted(entries) {
-  return entries.slice().sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.createdAt || '').localeCompare(a.createdAt || ''));
+// ---------- derived data ----------
+const partyById = (id) => state.data.parties.find((p) => p.id === id);
+const nameOf = (id) => partyById(id)?.name || 'Removed person';
+const joinNames = (ids) => ids.map(nameOf).join(' & ');
+const curTrip = () => state.data.trips.find((t) => t.id === state.tripId) || null;
+const tripEntries = (tripId = state.tripId) => state.data.entries.filter((e) => e.tripId === tripId);
+const entryPeople = (e) => (e.kind === 'payment' ? [e.from, e.to] : [e.payer, ...Object.keys(e.shares || {})]).filter(Boolean);
+// The people a trip shows: its frequent participants, plus anyone still on one of its expenses.
+function tripIds(trip = curTrip()) {
+  if (!trip) return [];
+  const ids = [...(trip.members || [])];
+  tripEntries(trip.id).forEach((e) => entryPeople(e).forEach((id) => { if (!ids.includes(id)) ids.push(id); }));
+  return ids.filter((id) => partyById(id));
+}
+const usesIn = (pid, entries) => entries.filter((e) => entryPeople(e).includes(pid)).length;
+const sortTrips = (ts) => ts.slice().sort((a, b) => (b.start || b.createdAt || '').localeCompare(a.start || a.createdAt || ''));
+const sortEntries = (es) => es.slice().sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.createdAt || '').localeCompare(a.createdAt || ''));
+
+function av(id, size = 'md') {
+  const p = partyById(id);
+  if (!p) return `<span class="av av-${size}" style="background:#8A939D;color:#FFFFFF" aria-hidden="true">?</span>`;
+  const bg = PALETTE[(p.color || 0) % PALETTE.length];
+  return `<span class="av av-${size}" style="background:${bg};color:${fgFor(bg)}" aria-hidden="true">${esc(initials(p.name))}</span>`;
 }
 
 // ---------- form evaluation ----------
 function evalForm() {
   const fm = state.form;
+  const members = tripIds();
   const amt = cents(fm.amt);
-  const inc = IDS.filter((id) => fm.inc[id]);
+  const inc = members.filter((id) => !fm.excl[id]);
   let shares = {};
   if (fm.mode === 'equal') shares = splitEqual(amt, inc);
   else inc.forEach((id) => { shares[id] = cents(fm.custom[id]); });
   const assigned = inc.reduce((a, id) => a + (shares[id] || 0), 0);
   let msg = '';
   let valid = false;
-  if (!amt) msg = 'Enter an amount.';
-  else if (!inc.length) msg = 'Choose at least one party to share this cost.';
+  if (!members.length) msg = 'Add who paid to get started.';
+  else if (!fm.payer || !members.includes(fm.payer)) msg = 'Choose who paid.';
+  else if (!amt) msg = 'Enter an amount.';
+  else if (!inc.length) msg = 'Choose at least one person to share this cost.';
   else if (fm.mode === 'exact' && assigned !== amt) msg = assigned < amt ? `${money(amt - assigned)} of ${money(amt)} still to assign` : `${money(assigned - amt)} more than the total`;
   else if (!fm.desc.trim()) msg = 'Add a short description.';
   else if (!/^\d{4}-\d{2}-\d{2}$/.test(fm.date)) msg = 'Pick a date.';
-  else { valid = true; msg = `Ready. ${nameOf(fm.payer)} paid; ${inc.length === IDS.length ? 'shared by all three' : 'shared by ' + joinNames(inc)}.`; }
+  else { valid = true; msg = `Ready. ${nameOf(fm.payer)} paid; ${inc.length === members.length && members.length > 1 ? 'shared by everyone' : 'shared by ' + joinNames(inc)}.`; }
   return { amt, inc, shares, valid, msg };
 }
 
@@ -107,19 +148,26 @@ function render() {
   const oldMain = $('#main');
   const keepScroll = oldMain && oldMain.dataset.screen === state.screen ? oldMain.scrollTop : 0;
 
-  if (state.needsTrip) { root.innerHTML = setupHtml(); return; }
+  if (state.needsGroup) { root.innerHTML = setupHtml(); return; }
 
-  const calc = computeBalances(state.entries, IDS);
-  const tr = minimalTransfers(calc.net, IDS);
+  const trip = curTrip();
+  if (TRIP_SCREENS.includes(state.screen) && !trip && !state.loading) state.screen = 'trips';
+  CUR = trip?.currency || CONFIG.defaultCurrency || '$';
+  const isTripScreen = TRIP_SCREENS.includes(state.screen);
+
+  let body;
+  if (state.loading) body = '<p class="muted center pad">Loading…</p>';
+  else if (state.error) body = `<div class="card"><p class="strong">Couldn’t load your trips</p><p class="muted">${esc(state.error)}</p><button class="btn" data-action="reload">Try again</button></div>`;
+  else body = screenHtml();
+
+  let calc = null;
+  if (isTripScreen && trip) calc = computeBalances(tripEntries(), tripIds());
+
   root.innerHTML =
-    headerHtml(calc) +
-    `<main id="main" data-screen="${state.screen}">${
-      state.loading ? '<p class="muted center pad">Loading…</p>'
-      : state.error ? `<div class="card"><p class="strong">Couldn’t load the trip</p><p class="muted">${esc(state.error)}</p><button class="btn" data-action="reload">Try again</button></div>`
-      : screenHtml(calc, tr)
-    }</main>` +
+    (isTripScreen ? tripHeaderHtml(trip, calc) : manageHeaderHtml(trip)) +
+    `<main id="main" data-screen="${state.screen}">${body}</main>` +
     (state.toast ? `<div class="toast" role="status">${esc(state.toast)}</div>` : '') +
-    navHtml() +
+    (isTripScreen ? navHtml() : '') +
     viewerHtml();
   const main = $('#main');
   if (main) main.scrollTop = keepScroll;
@@ -128,29 +176,52 @@ function render() {
 
 function setupHtml() {
   return `<main id="main" class="setup">
-    <h1>${esc(CONFIG.tripName)}</h1>
-    <p>This app is connected to a shared database. Start a new trip, then send the link to the other two parties. Everyone uses the same link.</p>
-    <button class="btn primary" data-action="newTrip">Start a new trip</button>
-    <p class="muted">Already have a link? Open it on this phone and the trip loads.</p>
+    <h1>Trip Split</h1>
+    <p>This app is connected to a shared database. Create a group for you and the people you travel with, then send them the link. Everyone uses the same link, for every trip.</p>
+    <button class="btn primary" data-action="newGroup">Create our group</button>
+    <p class="muted">Already have a link? Open it on this phone and your trips load.</p>
   </main>`;
 }
 
-function headerHtml(calc) {
-  const sync = store ? (store.mode === 'cloud' ? 'Synced' : 'On this phone only') : '';
+const syncLabel = () => (store ? (store.mode === 'cloud' ? 'Synced' : 'On this phone only') : '');
+
+function tripHeaderHtml(trip, calc) {
+  const ids = tripIds(trip);
   return `<header class="top">
-    <div class="top-row"><span class="trip">${esc(CONFIG.tripName)}</span><span class="sync">${esc(sync)}</span></div>
-    <h1>${TITLES[state.screen]}</h1>
-    <div class="tally" aria-label="Total spent per person">
-      ${IDS.map((id) => `<div class="tcard"><span class="tname">${av(id, 'xs')}<span class="ellipsis">${esc(nameOf(id))}</span></span><span class="tamt num">${money(calc.b[id].paid)}</span><span class="tlbl">spent</span></div>`).join('')}
+    <div class="top-row">
+      <button type="button" class="trip-switch" data-action="go" data-screen="trips" aria-label="Switch trip, current trip ${esc(trip?.name || '')}"><span class="ellipsis">${esc(trip?.name || 'Trips')}</span>${ICON.chevron}</button>
+      <span class="sync">${esc(syncLabel())}</span>
     </div>
+    <h1>${state.screen === 'add' && state.editId ? 'Edit expense' : TITLES[state.screen]}</h1>
+    ${calc && ids.length ? `<div class="tally" aria-label="Total spent per person">
+      ${ids.map((id) => `<div class="tcard"><span class="tname">${av(id, 'xs')}<span class="ellipsis">${esc(nameOf(id))}</span></span><span class="tamt num">${money(calc.b[id].paid)}</span><span class="tlbl">spent</span></div>`).join('')}
+    </div>` : ''}
+  </header>`;
+}
+
+function manageHeaderHtml(trip) {
+  const inList = state.screen === 'trips' || state.screen === 'people';
+  const back = inList
+    ? (trip ? `<button type="button" class="back" data-action="go" data-screen="balances">${ICON.back}<span class="ellipsis">${esc(trip.name)}</span></button>` : '<span></span>')
+    : `<button type="button" class="back" data-action="go" data-screen="${state.screen === 'tripEdit' ? 'trips' : 'people'}">${ICON.back}${state.screen === 'tripEdit' ? 'Trips' : 'People'}</button>`;
+  const title = state.screen === 'tripEdit' ? (state.tripForm?.id ? 'Edit trip' : 'New trip')
+    : state.screen === 'personEdit' ? (state.personForm?.id ? 'Edit person' : 'New person')
+    : TITLES[state.screen];
+  return `<header class="top">
+    <div class="top-row">${back}<span class="sync">${esc(syncLabel())}</span></div>
+    <h1>${title}</h1>
+    ${inList ? `<div class="seg" role="group" aria-label="Manage">
+      <button type="button" class="${state.screen === 'trips' ? 'on' : ''}" data-action="go" data-screen="trips" aria-pressed="${state.screen === 'trips'}">Trips</button>
+      <button type="button" class="${state.screen === 'people' ? 'on' : ''}" data-action="go" data-screen="people" aria-pressed="${state.screen === 'people'}">People</button>
+    </div>` : ''}
   </header>`;
 }
 
 function navHtml() {
   const tab = (k, label, icon) => `<button type="button" class="tab${state.screen === k ? ' on' : ''}" data-action="go" data-screen="${k}" ${state.screen === k ? 'aria-current="page"' : ''}>${icon}${label}</button>`;
-  return `<nav class="tabs" aria-label="Main">
+  return `<nav class="tabs" aria-label="Trip">
     ${tab('balances', 'Balances', ICON.balances)}
-    <button type="button" class="tab${state.screen === 'add' ? ' on' : ''}" data-action="go" data-screen="add" ${state.screen === 'add' ? 'aria-current="page"' : ''}><span class="addbubble">${ICON.plus}</span>Add</button>
+    <button type="button" class="tab${state.screen === 'add' ? ' on' : ''}" data-action="newExpense" ${state.screen === 'add' ? 'aria-current="page"' : ''}><span class="addbubble">${ICON.plus}</span>Add</button>
     ${tab('ledger', 'Ledger', ICON.ledger)}
     ${tab('settle', 'Settle up', ICON.settle)}
   </nav>`;
@@ -164,38 +235,143 @@ function viewerHtml() {
   </div>`;
 }
 
-function screenHtml(calc, tr) {
+function screenHtml() {
   switch (state.screen) {
+    case 'trips': return tripsHtml();
+    case 'tripEdit': return tripEditHtml();
+    case 'people': return peopleHtml();
+    case 'personEdit': return personEditHtml();
     case 'add': return addHtml();
-    case 'ledger': return ledgerHtml(calc);
-    case 'settle': return settleHtml(calc, tr);
-    default: return balancesHtml(calc, tr);
+    case 'ledger': return ledgerHtml();
+    case 'settle': return settleHtml();
+    default: return balancesHtml();
   }
 }
 
-function rowSub(e) {
-  if (e.kind === 'payment') return 'Payment between parties';
-  const sharers = IDS.filter((id) => (e.shares[id] || 0) > 0);
-  return `Paid by ${nameOf(e.payer)} · ${sharers.length === IDS.length ? 'split by all three' : 'split by ' + joinNames(sharers)}${e.mode === 'exact' ? ' (custom)' : ''}`;
+function chip(label, action, data, on, extra = '') {
+  const attrs = Object.entries(data).map(([k, v]) => `data-${k}="${esc(v)}"`).join(' ');
+  return `<button type="button" class="chip${on ? ' on' : ''}" data-action="${action}" ${attrs} aria-pressed="${on}" ${extra}>${label}</button>`;
 }
-function rowTitle(e) { return e.kind === 'payment' ? `${nameOf(e.from)} → ${nameOf(e.to)}` : e.desc; }
 
-function balancesHtml(calc, tr) {
-  if (!state.entries.length) {
-    return `<div class="stack">
-      <div class="card center">
-        <p class="strong big">No expenses yet</p>
-        <p class="muted">Add the first one and everyone’s totals appear here.</p>
-        <button class="btn primary" data-action="go" data-screen="add">Add first expense</button>
-        ${store && store.mode === 'local' ? '<button class="btn" data-action="loadSample">Try it with sample data</button>' : ''}
+// ----- trips -----
+function tripsHtml() {
+  const trips = sortTrips(state.data.trips);
+  return `<div class="stack">
+    <button type="button" class="btn primary" data-action="newTrip">${ICON.plus}New trip</button>
+    ${trips.length ? trips.map((t) => {
+      const es = tripEntries(t.id);
+      const calc = computeBalances(es, tripIds(t));
+      const ids = tripIds(t);
+      const current = t.id === state.tripId;
+      return `<div class="card trip-card${current ? ' current' : ''}">
+        <button type="button" class="trip-open" data-action="selectTrip" data-id="${esc(t.id)}">
+          <span class="grow">
+            <span class="strong big">${esc(t.name)}</span>
+            <span class="small muted">${esc([fmtRange(t.start, t.end), plural(calc.expCount, 'expense', 'expenses'), money(calc.total, t.currency)].filter(Boolean).join(' · '))}</span>
+          </span>
+          ${current ? '<span class="badge">Current</span>' : ''}
+        </button>
+        <div class="trip-foot">
+          <span class="dots">${ids.length ? ids.slice(0, 8).map((id) => av(id, 'dot')).join('') : '<span class="small muted">No one yet</span>'}</span>
+          <button type="button" class="link" data-action="editTrip" data-id="${esc(t.id)}">Edit</button>
+        </div>
+      </div>`;
+    }).join('') : `<div class="card center"><p class="strong big">No trips yet</p><p class="muted">Create a trip, then add expenses. People are added as you go.</p>
+      ${store?.mode === 'local' ? '<button class="btn" data-action="loadSample">Try it with sample data</button>' : ''}</div>`}
+  </div>`;
+}
+
+function tripEditHtml() {
+  const f = state.tripForm;
+  if (!f) return '';
+  const trip = state.data.trips.find((t) => t.id === f.id);
+  const es = trip ? tripEntries(trip.id) : [];
+  const members = trip ? tripIds(trip) : [];
+  return `<div class="stack gap-lg">
+    <label class="field"><span class="lbl">Trip name</span><input data-tf="name" type="text" maxlength="60" placeholder="e.g. Lisbon, October" value="${esc(f.name)}"></label>
+    <div class="grid2">
+      <label class="field"><span class="lbl">Starts</span><input data-tf="start" type="date" value="${esc(f.start)}"></label>
+      <label class="field"><span class="lbl">Ends</span><input data-tf="end" type="date" value="${esc(f.end)}"></label>
+    </div>
+    <div class="field"><span class="lbl">Currency</span>
+      <div class="wrap">${CURRENCIES.map((c) => chip(esc(c), 'tripCurrency', { c }, f.currency === c)).join('')}</div>
+    </div>
+    <button type="button" class="btn primary big" data-action="saveTrip">${trip ? 'Save trip' : 'Create trip'}</button>
+
+    ${trip ? `<h2>Frequent participants</h2>
+      <p class="small muted note">People join a trip automatically when you add them to one of its expenses. Remove anyone added by mistake.</p>
+      <div class="card tight">
+        ${members.length ? members.map((id) => {
+          const n = usesIn(id, es);
+          return `<div class="list-row">${av(id, 'md')}<span class="grow"><span class="strong">${esc(nameOf(id))}</span><span class="small muted">${n ? 'On ' + plural(n, 'entry', 'entries') + ' — edit those first to remove' : 'Not on any expenses'}</span></span>
+            <button type="button" class="btn small-btn" data-action="removeMember" data-id="${esc(id)}" ${n ? 'disabled' : ''} aria-label="Remove ${esc(nameOf(id))} from this trip">Remove</button></div>`;
+        }).join('') : '<p class="small muted pad-y">No one yet. Add people from the Add expense screen.</p>'}
       </div>
-    </div>`;
+      <button type="button" class="btn danger" data-action="deleteTrip" data-id="${esc(trip.id)}">Delete trip${es.length ? ' and its ' + plural(es.length, 'entry', 'entries') : ''}</button>` : ''}
+  </div>`;
+}
+
+// ----- people -----
+function peopleHtml() {
+  const ps = state.data.parties.slice().sort((a, b) => a.name.localeCompare(b.name));
+  return `<div class="stack">
+    <button type="button" class="btn primary" data-action="newPersonScreen">${ICON.plus}Add person</button>
+    ${ps.length ? `<div class="card tight">${ps.map((p) => {
+      const tripsIn = state.data.trips.filter((t) => tripIds(t).includes(p.id)).length;
+      const contact = [p.phone, p.email].filter(Boolean).join(' · ');
+      return `<button type="button" class="list-row as-button" data-action="editPerson" data-id="${esc(p.id)}">${av(p.id, 'md')}
+        <span class="grow"><span class="strong">${esc(p.name)}</span><span class="small muted ellipsis">${esc(contact || 'No contact details')}</span></span>
+        <span class="small muted">${plural(tripsIn, 'trip', 'trips')}</span></button>`;
+    }).join('')}</div>` : '<div class="card center"><p class="strong big">No people yet</p><p class="muted">People are added when you put them on an expense, or here.</p></div>'}
+  </div>`;
+}
+
+function personEditHtml() {
+  const f = state.personForm;
+  if (!f) return '';
+  const p = f.id ? partyById(f.id) : null;
+  const n = p ? usesIn(p.id, state.data.entries) : 0;
+  return `<div class="stack gap-lg">
+    ${CAN_PICK_CONTACTS ? `<button type="button" class="btn" data-action="fillFromContacts">${ICON.contacts}Fill in from contacts</button>` : ''}
+    <label class="field"><span class="lbl">Name</span><input data-pf="name" type="text" maxlength="60" autocomplete="off" value="${esc(f.name)}"></label>
+    <label class="field"><span class="lbl">Phone</span><input data-pf="phone" type="tel" autocomplete="off" placeholder="Optional" value="${esc(f.phone)}"></label>
+    <label class="field"><span class="lbl">Email</span><input data-pf="email" type="email" autocomplete="off" placeholder="Optional" value="${esc(f.email)}"></label>
+    <div class="field"><span class="lbl">Color</span>
+      <div class="wrap">${PALETTE.map((c, i) => `<button type="button" class="swatch${f.color === i ? ' on' : ''}" data-action="personColor" data-i="${i}" style="background:${c}" aria-label="Color ${i + 1}" aria-pressed="${f.color === i}"></button>`).join('')}</div>
+    </div>
+    <button type="button" class="btn primary big" data-action="savePerson">${p ? 'Save' : 'Add person'}</button>
+    ${p ? `<button type="button" class="btn danger" data-action="deletePerson" data-id="${esc(p.id)}" ${n ? 'disabled' : ''}>Delete person</button>
+      ${n ? `<p class="small muted note">${esc(p.name)} is on ${plural(n, 'entry', 'entries')}, so they can’t be deleted. Edit or delete those entries first.</p>` : ''}` : ''}
+  </div>`;
+}
+
+// ----- balances -----
+function rowSub(e) {
+  if (e.kind === 'payment') return 'Payment between people';
+  const sharers = Object.keys(e.shares || {}).filter((id) => e.shares[id] > 0);
+  const all = tripIds();
+  const everyone = sharers.length === all.length && all.length > 2;
+  return `Paid by ${nameOf(e.payer)} · ${everyone ? 'split by everyone' : 'split by ' + joinNames(sharers)}${e.mode === 'exact' ? ' (custom)' : ''}`;
+}
+const rowTitle = (e) => (e.kind === 'payment' ? `${nameOf(e.from)} → ${nameOf(e.to)}` : e.desc);
+
+function balancesHtml() {
+  const es = tripEntries();
+  const ids = tripIds();
+  if (!es.length) {
+    return `<div class="stack"><div class="card center">
+      <p class="strong big">No expenses yet</p>
+      <p class="muted">Add the first one. Whoever you put on it joins this trip.</p>
+      <button class="btn primary" data-action="newExpense">Add first expense</button>
+    </div></div>`;
   }
-  const recent = sorted(state.entries).slice(0, 3);
+  const calc = computeBalances(es, ids);
+  const tr = minimalTransfers(calc.net, ids);
+  const recent = sortEntries(es).slice(0, 3);
   return `<div class="stack">
     <div class="card dark split">
       <div><span class="lbl-dark">Shared spending so far</span><span class="hero num">${money(calc.total)}</span></div>
-      <span class="lbl-dark right">3 parties<br>${calc.expCount} expenses</span>
+      <span class="lbl-dark right">${plural(ids.length, 'person', 'people')}<br>${plural(calc.expCount, 'expense', 'expenses')}</span>
     </div>
     ${tr.length ? `<div class="card">
       <span class="lbl">If you squared up right now</span>
@@ -207,19 +383,38 @@ function balancesHtml(calc, tr) {
   </div>`;
 }
 
-function chip(label, action, data, on, extra = '') {
-  const attrs = Object.entries(data).map(([k, v]) => `data-${k}="${esc(v)}"`).join(' ');
-  return `<button type="button" class="chip${on ? ' on' : ''}" data-action="${action}" ${attrs} aria-pressed="${on}" ${extra}>${label}</button>`;
+// ----- add / edit expense -----
+function pickerHtml(forWhat) {
+  const members = tripIds();
+  const others = state.data.parties.filter((p) => !members.includes(p.id)).sort((a, b) => a.name.localeCompare(b.name));
+  const np = state.newPerson;
+  return `<div class="card picker">
+    <span class="lbl">${forWhat === 'payer' ? 'Who paid? Add them to this trip' : 'Add someone to this trip'}</span>
+    ${others.length ? `<div class="wrap">${others.map((p) => chip(av(p.id, 'sm') + esc(p.name), 'pickPerson', { id: p.id }, false)).join('')}</div>` : ''}
+    ${CAN_PICK_CONTACTS ? `<button type="button" class="btn" data-action="pickContact">${ICON.contacts}Choose from contacts</button>` : ''}
+    <div class="newperson">
+      <input data-np="name" type="text" maxlength="60" autocomplete="off" placeholder="${others.length || CAN_PICK_CONTACTS ? 'Or type a new name' : 'Name'}" aria-label="New person’s name" value="${esc(np.name)}">
+      <div class="grid2">
+        <input data-np="phone" type="tel" autocomplete="off" placeholder="Phone (optional)" aria-label="Phone" value="${esc(np.phone)}">
+        <input data-np="email" type="email" autocomplete="off" placeholder="Email (optional)" aria-label="Email" value="${esc(np.email)}">
+      </div>
+      <button type="button" class="btn primary" data-action="createPerson">Add to trip</button>
+    </div>
+    ${members.length ? '<button type="button" class="link small" data-action="closePicker">Cancel</button>' : ''}
+  </div>`;
 }
 
 function addHtml() {
   const fm = state.form;
+  const members = tripIds();
+  const picker = state.picker || (!members.length ? 'payer' : null);
   const r = state.receipt;
   const img = r.blobUrl || (r.ref && store ? store.receiptUrl(r.ref) : '');
   const receiptTitle = r.status === 'reading' ? 'Reading receipt…' : r.status === 'done' ? 'Receipt attached' : 'Scan a receipt';
   const receiptMsg = r.status === 'reading' ? 'Pulling out what it was, the date and the total.'
     : r.status === 'done' ? r.note
     : store && store.mode === 'cloud' ? 'Take a photo and the details fill in for you.' : 'Attach a photo. Auto-read works once the app is connected (see README).';
+  const addChip = (forWhat) => `<button type="button" class="chip add-chip${picker === forWhat ? ' on' : ''}" data-action="openPicker" data-for="${forWhat}" aria-expanded="${picker === forWhat}">${ICON.plus}Add person</button>`;
   return `<div class="stack gap-lg">
     <div class="card receipt">
       ${img
@@ -248,11 +443,13 @@ function addHtml() {
     </div>
 
     <div class="field"><span class="lbl">Who paid?</span>
-      <div class="grid3">${IDS.map((id) => chip(av(id, 'sm') + esc(nameOf(id)), 'payer', { id }, fm.payer === id, 'style="height:52px"')).join('')}</div>
+      <div class="wrap">${members.map((id) => chip(av(id, 'sm') + esc(nameOf(id)), 'payer', { id }, fm.payer === id, 'style="min-height:48px"')).join('')}${addChip('payer')}</div>
+      ${picker === 'payer' ? pickerHtml('payer') : ''}
     </div>
 
-    <div class="field"><span class="lbl">Who shares this cost?</span>
-      <div class="grid3">${IDS.map((id) => chip((fm.inc[id] ? ICON.check : '') + esc(nameOf(id)), 'inc', { id }, !!fm.inc[id], 'style="height:52px"')).join('')}</div>
+    ${members.length ? `<div class="field"><span class="lbl">Who shares this cost?</span>
+      <div class="wrap">${members.map((id) => chip((!fm.excl[id] ? ICON.check : '') + esc(nameOf(id)), 'inc', { id }, !fm.excl[id], 'style="min-height:48px"')).join('')}${addChip('share')}</div>
+      ${picker === 'share' ? pickerHtml('share') : ''}
     </div>
 
     <div class="field"><span class="lbl">How is it split?</span>
@@ -260,14 +457,15 @@ function addHtml() {
         <button type="button" class="${fm.mode === 'equal' ? 'on' : ''}" data-action="mode" data-mode="equal" aria-pressed="${fm.mode === 'equal'}">Equally</button>
         <button type="button" class="${fm.mode === 'exact' ? 'on' : ''}" data-action="mode" data-mode="exact" aria-pressed="${fm.mode === 'exact'}">Exact amounts</button>
       </div>
-    </div>
+    </div>` : ''}
 
     <div class="card tight">
-      ${fm.mode === 'exact' ? IDS.filter((id) => fm.inc[id]).map((id) => `<div class="exact-row">${av(id, 'sm')}<span class="grow strong">${esc(nameOf(id))}</span><input data-field="custom" data-id="${id}" type="text" inputmode="decimal" aria-label="Amount for ${esc(nameOf(id))}" placeholder="0.00" value="${esc(fm.custom[id])}"></div>`).join('') : ''}
+      ${fm.mode === 'exact' ? members.filter((id) => !fm.excl[id]).map((id) => `<div class="exact-row">${av(id, 'sm')}<span class="grow strong">${esc(nameOf(id))}</span><input data-field="custom" data-id="${esc(id)}" type="text" inputmode="decimal" aria-label="Amount for ${esc(nameOf(id))}" placeholder="0.00" value="${esc(fm.custom[id] || '')}"></div>`).join('') : ''}
       <p id="add-status" class="status" role="status"></p>
     </div>
 
-    <button id="save-btn" type="button" class="btn primary big" data-action="save">Save expense</button>
+    <button id="save-btn" type="button" class="btn primary big" data-action="save">${state.editId ? 'Save changes' : 'Save expense'}</button>
+    ${state.editId ? '<button type="button" class="link center" data-action="cancelEdit">Cancel editing</button>' : ''}
   </div>`;
 }
 
@@ -279,13 +477,16 @@ function updateAddLive() {
   if (b) b.disabled = !r.valid;
 }
 
-function ledgerHtml(calc) {
+// ----- ledger -----
+function ledgerHtml() {
   const f = state.filter;
-  const involves = (e, id) => (e.kind === 'payment' ? e.from === id || e.to === id : e.payer === id || (e.shares[id] || 0) > 0);
-  const rows = sorted(state.entries).filter((e) => f === 'all' || involves(e, f));
+  const ids = tripIds();
+  const es = tripEntries();
+  const calc = computeBalances(es, ids);
+  const rows = sortEntries(es).filter((e) => f === 'all' || entryPeople(e).includes(f));
   let focus = '';
-  if (f !== 'all' && P[f]) {
-    const partN = state.entries.filter((e) => e.kind !== 'payment' && (e.shares[f] || 0) > 0).length;
+  if (f !== 'all' && ids.includes(f)) {
+    const partN = es.filter((e) => e.kind !== 'payment' && (e.shares[f] || 0) > 0).length;
     focus = `<div class="card dark">
       <span class="tname strong">${av(f, 'sm')}${esc(nameOf(f))}</span>
       <div class="grid2">
@@ -296,11 +497,11 @@ function ledgerHtml(calc) {
     </div>`;
   }
   return `<div class="stack">
-    <div class="wrap">${[['all', 'All']].concat(IDS.map((id) => [id, nameOf(id)])).map(([k, l]) => chip(esc(l), 'filter', { k }, f === k)).join('')}</div>
+    <div class="wrap">${[['all', 'All']].concat(ids.map((id) => [id, nameOf(id)])).map(([k, l]) => chip(esc(l), 'filter', { k }, f === k)).join('')}</div>
     ${focus}
     ${rows.length ? rows.map((e) => {
       const open = state.openId === e.id;
-      const dots = (e.kind === 'payment' ? [e.from, e.to] : IDS.filter((id) => (e.shares[id] || 0) > 0)).map((id) => av(id, 'dot')).join('');
+      const dots = (e.kind === 'payment' ? [e.from, e.to] : Object.keys(e.shares).filter((id) => e.shares[id] > 0)).map((id) => av(id, 'dot')).join('');
       const rurl = e.receipt && store ? store.receiptUrl(e.receipt) : '';
       const meta = `${fmtDay(e.date)} · ${e.kind === 'payment' ? 'Settle-up payment' : esc(e.cat)}${e.receipt ? ' · Receipt' : ''}`;
       return `<div class="card entry">
@@ -310,23 +511,40 @@ function ledgerHtml(calc) {
         </button>
         ${open ? `<div class="entry-body">
           ${rurl ? `<button type="button" class="link with-thumb" data-action="viewReceipt" data-url="${esc(rurl)}"><img src="${esc(rurl)}" alt="">View receipt</button>` : ''}
-          <button type="button" class="btn danger" data-action="del" data-id="${esc(e.id)}">Delete entry</button>
+          <div class="row-btns">
+            ${e.kind === 'expense' ? `<button type="button" class="btn" data-action="editExpense" data-id="${esc(e.id)}">Edit</button>` : ''}
+            <button type="button" class="btn danger" data-action="del" data-id="${esc(e.id)}">Delete</button>
+          </div>
         </div>` : ''}
       </div>`;
     }).join('') : '<p class="muted center pad">Nothing here yet.</p>'}
   </div>`;
 }
 
-function summaryText(calc, tr) {
-  const lines = [CONFIG.tripName + ' — settle-up as of ' + fmtDay(todayISO()) + ':'];
+// ----- settle -----
+function summaryText(trip, calc, tr, ids) {
+  const lines = [trip.name + ' — settle-up as of ' + fmtDay(todayISO()) + ':'];
   if (tr.length) tr.forEach((t) => lines.push(`• ${nameOf(t.from)} pays ${nameOf(t.to)} ${money(t.amount)}`));
   else lines.push('Everyone is square — no payments due.');
   lines.push('', 'Shared spending: ' + money(calc.total));
-  IDS.forEach((id) => lines.push(`${nameOf(id)}: spent ${money(calc.b[id].paid)}, benefitted ${money(calc.b[id].share)}, net ${signed(calc.net[id])}`));
+  ids.forEach((id) => lines.push(`${nameOf(id)}: spent ${money(calc.b[id].paid)}, benefitted ${money(calc.b[id].share)}, net ${signed(calc.net[id])}`));
   return lines.join('\n');
 }
 
-function settleHtml(calc, tr) {
+function messageLink(t, trip) {
+  const p = partyById(t.from);
+  if (!p) return '';
+  const body = `Hi ${p.name}, settling up for ${trip.name}: you owe ${nameOf(t.to)} ${money(t.amount)}.`;
+  if (p.phone) return `<a class="btn" href="sms:${esc(p.phone.replace(/[^\d+]/g, ''))}?&body=${encodeURIComponent(body)}">Text ${esc(p.name)}</a>`;
+  if (p.email) return `<a class="btn" href="mailto:${esc(p.email)}?subject=${encodeURIComponent(trip.name + ' settle-up')}&body=${encodeURIComponent(body)}">Email ${esc(p.name)}</a>`;
+  return '';
+}
+
+function settleHtml() {
+  const trip = curTrip();
+  const ids = tripIds();
+  const calc = computeBalances(tripEntries(), ids);
+  const tr = minimalTransfers(calc.net, ids);
   const canShare = !!navigator.share;
   return `<div class="stack">
     ${tr.length ? `<p class="lead">${tr.length === 1 ? 'One payment settles' : tr.length + ' payments settle'} every balance.</p>
@@ -334,27 +552,26 @@ function settleHtml(calc, tr) {
         <div class="transfer">${av(t.from, 'lg')}<span class="arrow">${ICON.arrow}</span>${av(t.to, 'lg')}
           <span class="grow right"><span class="mid num">${money(t.amount)}</span><span class="small muted">${esc(nameOf(t.from))} pays ${esc(nameOf(t.to))}</span></span>
         </div>
-        <button type="button" class="btn primary" data-action="record" data-i="${i}">Mark as paid</button>
+        <div class="row-btns">${messageLink(t, trip)}<button type="button" class="btn primary grow-btn" data-action="record" data-i="${i}">Mark as paid</button></div>
       </div>`).join('')}`
-    : `<div class="card center"><span class="ok-icon">${ICON.check}</span><span class="strong big">Everyone is square</span><span class="muted">No payments are due between parties.</span></div>`}
+    : `<div class="card center"><span class="ok-icon">${ICON.check}</span><span class="strong big">Everyone is square</span><span class="muted">No payments are due.</span></div>`}
 
     <h2>Breakdown</h2>
     <div class="card tight">
-      <div class="table head"><span>Party</span><span>Spent</span><span>Benefitted</span><span>Net</span></div>
-      ${IDS.map((id) => `<div class="table num"><span class="strong">${esc(nameOf(id))}</span><span>${money(calc.b[id].paid)}</span><span>${money(calc.b[id].share)}</span><span class="strong">${signed(calc.net[id])}</span></div>`).join('')}
+      <div class="table head"><span>Person</span><span>Spent</span><span>Benefitted</span><span>Net</span></div>
+      ${ids.map((id) => `<div class="table num"><span class="strong ellipsis">${esc(nameOf(id))}</span><span>${money(calc.b[id].paid)}</span><span>${money(calc.b[id].share)}</span><span class="strong">${signed(calc.net[id])}</span></div>`).join('')}
       <p class="small muted pad-y">Net = spent − benefitted, adjusted for settle-up payments already made.</p>
     </div>
 
     <h2>Share with the group</h2>
     <div class="card">
-      <p class="summary num">${esc(summaryText(calc, tr))}</p>
+      <p class="summary num">${esc(summaryText(trip, calc, tr, ids))}</p>
       <button type="button" class="btn" data-action="share">${canShare ? 'Share summary' : 'Copy summary'}</button>
     </div>
-    ${store && store.mode === 'local' && state.entries.length ? '<button type="button" class="link small center" data-action="clearLocal">Clear all data on this phone</button>' : ''}
   </div>`;
 }
 
-// ---------- actions ----------
+// ---------- persistence helpers ----------
 function flash(msg) {
   clearTimeout(toastTimer);
   state.toast = msg;
@@ -375,8 +592,13 @@ function softRender() {
 
 async function refresh() {
   try {
-    state.entries = await store.list();
+    state.data = await store.load();
     state.error = '';
+    if (!curTrip()) {
+      const fallback = sortTrips(state.data.trips)[0];
+      state.tripId = fallback ? fallback.id : '';
+      if (!fallback && TRIP_SCREENS.includes(state.screen)) state.screen = 'trips';
+    }
   } catch (err) {
     state.error = (err && err.message) || 'Network error';
   }
@@ -384,86 +606,296 @@ async function refresh() {
   softRender();
 }
 
-async function persistAdd(entry, okMsg) {
-  state.entries = state.entries.concat([entry]);
-  flash(okMsg);
-  try { await store.add(entry); }
+// Apply a change locally right away, then save; undo and explain if saving fails.
+async function commit(apply, save, undo, okMsg) {
+  apply();
+  if (okMsg) flash(okMsg); else render();
+  try { await save(); }
   catch (err) {
-    state.entries = state.entries.filter((e) => e.id !== entry.id);
+    undo();
     flash(err && err.message === 'storage_full' ? 'Phone storage is full — remove a receipt photo or two.' : 'Couldn’t save. Check your connection and try again.');
   }
 }
+const replaceIn = (key, item) => {
+  const list = state.data[key];
+  const i = list.findIndex((x) => x.id === item.id);
+  state.data[key] = i >= 0 ? list.map((x) => (x.id === item.id ? item : x)) : list.concat([item]);
+};
+const removeFrom = (key, id) => { state.data[key] = state.data[key].filter((x) => x.id !== id); };
+const snapshot = () => JSON.parse(JSON.stringify(state.data));
 
+function selectTrip(id) {
+  state.tripId = id;
+  pref.set('activeTrip', id);
+  state.filter = 'all';
+  state.openId = null;
+  state.editId = null;
+  state.form = blankForm();
+  state.picker = null;
+}
+
+// Puts a person on the current trip's frequent-participant list (if not already) and on the form.
+async function addToTrip(pid, forWhat) {
+  const trip = curTrip();
+  if (!trip) return;
+  if (forWhat === 'payer') state.form.payer = pid;
+  delete state.form.excl[pid];
+  state.picker = null;
+  state.newPerson = { name: '', phone: '', email: '' };
+  if ((trip.members || []).includes(pid)) { render(); return; }
+  const before = snapshot();
+  const updated = { ...trip, members: [...(trip.members || []), pid] };
+  await commit(() => replaceIn('trips', updated), () => store.saveTrip(updated), () => { state.data = before; }, `${nameOf(pid)} added to ${trip.name}`);
+}
+
+async function createParty(fields) {
+  const name = String(fields.name || '').trim();
+  if (!name) return null;
+  const existing = state.data.parties.find((p) => p.name.trim().toLowerCase() === name.toLowerCase());
+  if (existing) {
+    // Same name: fill in any missing contact details rather than creating a duplicate.
+    const merged = { ...existing, phone: existing.phone || fields.phone || '', email: existing.email || fields.email || '' };
+    if (merged.phone !== existing.phone || merged.email !== existing.email) {
+      replaceIn('parties', merged);
+      try { await store.saveParty(merged); } catch {}
+    }
+    return existing.id;
+  }
+  const p = { id: uuid(), name: name.slice(0, 60), phone: String(fields.phone || '').trim(), email: String(fields.email || '').trim(), color: state.data.parties.length % PALETTE.length, createdAt: new Date().toISOString() };
+  replaceIn('parties', p);
+  try { await store.saveParty(p); }
+  catch { removeFrom('parties', p.id); flash('Couldn’t save that person. Try again.'); return null; }
+  return p.id;
+}
+
+// Contact Picker API: the phone shows its own contact list and returns only the one person chosen.
+async function chooseContact() {
+  try {
+    const [c] = await navigator.contacts.select(['name', 'tel', 'email'], { multiple: false });
+    if (!c) return null;
+    return { name: (c.name && c.name[0]) || '', phone: (c.tel && c.tel[0]) || '', email: (c.email && c.email[0]) || '' };
+  } catch { return null; }
+}
+
+// ---------- actions ----------
 const actions = {
-  go(d) { state.screen = d.screen; state.openId = null; render(); $('#main') && ($('#main').scrollTop = 0); },
-  reload() { state.loading = true; render(); refresh(); },
-  filter(d) { state.filter = d.k; state.openId = null; render(); },
-  toggle(d) { state.openId = state.openId === d.id ? null : d.id; render(); },
-  async del(d) {
-    const gone = state.entries.find((e) => e.id === d.id);
-    if (!gone || !confirmDelete(gone)) return;
-    state.entries = state.entries.filter((e) => e.id !== d.id);
+  go(d) {
+    if (TRIP_SCREENS.includes(d.screen) && !curTrip()) { state.screen = 'trips'; render(); return; }
+    if (d.screen === 'add' && !state.editId) state.picker = null;
+    state.screen = d.screen;
     state.openId = null;
-    flash('Entry deleted');
-    try { await store.remove(d.id); } catch { state.entries = state.entries.concat([gone]); flash('Couldn’t delete. Try again.'); }
+    render();
+    const m = $('#main'); if (m) m.scrollTop = 0;
   },
-  viewReceipt(d) { state.viewUrl = d.url; render(); },
-  closeViewer() { state.viewUrl = ''; render(); },
+  reload() { state.loading = true; render(); refresh(); },
+  newExpense() {
+    if (state.editId) { state.editId = null; state.form = blankForm(); state.receipt = blankReceipt(); }
+    state.picker = null;
+    actions.go({ screen: 'add' });
+  },
+
+  // trips
+  selectTrip(d) { selectTrip(d.id); state.screen = 'balances'; render(); },
+  newTrip() { state.tripForm = { id: null, name: '', start: '', end: '', currency: CONFIG.defaultCurrency || '$' }; state.screen = 'tripEdit'; render(); },
+  editTrip(d) {
+    const t = state.data.trips.find((x) => x.id === d.id);
+    if (!t) return;
+    state.tripForm = { id: t.id, name: t.name, start: t.start || '', end: t.end || '', currency: t.currency || '$' };
+    state.screen = 'tripEdit';
+    render();
+  },
+  tripCurrency(d) { state.tripForm.currency = d.c; render(); },
+  async saveTrip() {
+    const f = state.tripForm;
+    const name = f.name.trim();
+    if (!name) { flash('Give the trip a name.'); return; }
+    if (f.start && f.end && f.end < f.start) { flash('The end date is before the start date.'); return; }
+    const old = state.data.trips.find((t) => t.id === f.id);
+    const trip = old ? { ...old, name, start: f.start, end: f.end, currency: f.currency }
+      : { id: uuid(), name, start: f.start, end: f.end, currency: f.currency, members: [], createdAt: new Date().toISOString() };
+    const before = snapshot();
+    await commit(() => {
+      replaceIn('trips', trip);
+      if (!old) { selectTrip(trip.id); state.screen = 'add'; } else state.screen = 'trips';
+    }, () => store.saveTrip(trip), () => { state.data = before; }, old ? 'Trip saved' : `${name} created. Add the first expense.`);
+  },
+  async removeMember(d) {
+    const trip = state.data.trips.find((t) => t.id === state.tripForm?.id);
+    if (!trip || usesIn(d.id, tripEntries(trip.id))) return;
+    const updated = { ...trip, members: (trip.members || []).filter((id) => id !== d.id) };
+    const before = snapshot();
+    await commit(() => replaceIn('trips', updated), () => store.saveTrip(updated), () => { state.data = before; }, `${nameOf(d.id)} removed from ${trip.name}`);
+  },
+  async deleteTrip(d) {
+    const trip = state.data.trips.find((t) => t.id === d.id);
+    if (!trip) return;
+    const n = tripEntries(trip.id).length;
+    if (!window.confirm(`Delete “${trip.name}”${n ? ' and its ' + plural(n, 'entry', 'entries') : ''} for everyone? This can’t be undone.`)) return;
+    const before = snapshot();
+    await commit(() => {
+      removeFrom('trips', trip.id);
+      state.data.entries = state.data.entries.filter((e) => e.tripId !== trip.id);
+      if (state.tripId === trip.id) { const next = sortTrips(state.data.trips)[0]; selectTrip(next ? next.id : ''); }
+      state.screen = 'trips';
+    }, () => store.deleteTrip(trip.id), () => { state.data = before; }, 'Trip deleted');
+  },
+
+  // people
+  newPersonScreen() { state.personForm = { id: null, name: '', phone: '', email: '', color: state.data.parties.length % PALETTE.length }; state.screen = 'personEdit'; render(); },
+  editPerson(d) {
+    const p = partyById(d.id);
+    if (!p) return;
+    state.personForm = { id: p.id, name: p.name, phone: p.phone || '', email: p.email || '', color: p.color || 0 };
+    state.screen = 'personEdit';
+    render();
+  },
+  personColor(d) { state.personForm.color = Number(d.i); render(); },
+  async fillFromContacts() {
+    const c = await chooseContact();
+    if (!c) return;
+    Object.assign(state.personForm, { name: c.name || state.personForm.name, phone: c.phone || state.personForm.phone, email: c.email || state.personForm.email });
+    render();
+  },
+  async savePerson() {
+    const f = state.personForm;
+    const name = f.name.trim();
+    if (!name) { flash('Enter a name.'); return; }
+    const dup = state.data.parties.find((p) => p.id !== f.id && p.name.trim().toLowerCase() === name.toLowerCase());
+    if (dup) { flash(`There’s already someone called ${dup.name}.`); return; }
+    const old = f.id ? partyById(f.id) : null;
+    const p = { ...(old || { id: uuid(), createdAt: new Date().toISOString() }), name, phone: f.phone.trim(), email: f.email.trim(), color: f.color };
+    const before = snapshot();
+    await commit(() => { replaceIn('parties', p); state.screen = 'people'; }, () => store.saveParty(p), () => { state.data = before; }, old ? 'Saved' : `${name} added`);
+  },
+  async deletePerson(d) {
+    const p = partyById(d.id);
+    if (!p || usesIn(p.id, state.data.entries)) return;
+    if (!window.confirm(`Delete ${p.name}? They’ll also be removed from any trips they’re listed on.`)) return;
+    const before = snapshot();
+    const touched = state.data.trips.filter((t) => (t.members || []).includes(p.id)).map((t) => ({ ...t, members: t.members.filter((id) => id !== p.id) }));
+    await commit(() => {
+      removeFrom('parties', p.id);
+      touched.forEach((t) => replaceIn('trips', t));
+      state.screen = 'people';
+    }, async () => { for (const t of touched) await store.saveTrip(t); await store.deleteParty(p.id); }, () => { state.data = before; }, `${p.name} deleted`);
+  },
+
+  // add / edit expense
+  openPicker(d) { state.picker = state.picker === d.for ? null : d.for; render(); const i = $('[data-np=name]'); if (i && !CAN_PICK_CONTACTS) i.focus(); },
+  closePicker() { state.picker = null; render(); },
+  async pickPerson(d) { await addToTrip(d.id, state.picker || (tripIds().length ? 'share' : 'payer')); },
+  async createPerson() {
+    const forWhat = state.picker || (tripIds().length ? 'share' : 'payer');
+    if (!state.newPerson.name.trim()) { flash('Type a name first.'); return; }
+    const pid = await createParty(state.newPerson);
+    if (pid) await addToTrip(pid, forWhat);
+  },
+  async pickContact() {
+    const forWhat = state.picker || (tripIds().length ? 'share' : 'payer');
+    const c = await chooseContact();
+    if (!c || !c.name) return;
+    const pid = await createParty(c);
+    if (pid) await addToTrip(pid, forWhat);
+  },
   cat(d) { state.form.cat = d.cat; render(); },
   payer(d) { state.form.payer = d.id; render(); },
-  inc(d) { state.form.inc[d.id] = !state.form.inc[d.id]; render(); },
+  inc(d) { if (state.form.excl[d.id]) delete state.form.excl[d.id]; else state.form.excl[d.id] = true; render(); },
   mode(d) {
     const fm = state.form;
     if (d.mode === 'exact' && fm.mode !== 'exact') {
-      const incl = IDS.filter((id) => fm.inc[id]);
+      const incl = tripIds().filter((id) => !fm.excl[id]);
       const eq = splitEqual(cents(fm.amt), incl);
-      fm.custom = Object.fromEntries(IDS.map((id) => [id, eq[id] ? (eq[id] / 100).toFixed(2) : '']));
+      fm.custom = Object.fromEntries(incl.map((id) => [id, eq[id] ? (eq[id] / 100).toFixed(2) : '']));
     }
     fm.mode = d.mode;
     render();
   },
+  editExpense(d) {
+    const e = state.data.entries.find((x) => x.id === d.id);
+    if (!e || e.kind !== 'expense') return;
+    const members = tripIds();
+    state.editId = e.id;
+    state.form = {
+      amt: (e.amount / 100).toFixed(2), desc: e.desc, date: e.date, cat: e.cat, payer: e.payer,
+      excl: Object.fromEntries(members.filter((id) => !(e.shares[id] > 0)).map((id) => [id, true])),
+      mode: e.mode === 'exact' ? 'exact' : 'equal',
+      custom: Object.fromEntries(Object.entries(e.shares).map(([id, c]) => [id, (c / 100).toFixed(2)])),
+    };
+    state.receipt = e.receipt ? { status: 'done', blobUrl: '', ref: e.receipt, note: 'Saved with this expense.' } : blankReceipt();
+    state.picker = null;
+    state.screen = 'add';
+    render();
+    const m = $('#main'); if (m) m.scrollTop = 0;
+  },
+  cancelEdit() { state.editId = null; state.form = blankForm(); state.receipt = blankReceipt(); state.screen = 'ledger'; render(); },
   async save() {
     const r = evalForm();
     if (!r.valid) return;
     const fm = state.form;
     const shares = {};
     r.inc.forEach((id) => { if (r.shares[id] > 0) shares[id] = r.shares[id]; });
-    const entry = { id: uuid(), kind: 'expense', desc: fm.desc.trim(), cat: fm.cat, date: fm.date, amount: r.amt, payer: fm.payer, shares, mode: fm.mode, receipt: state.receipt.ref || '', createdAt: new Date().toISOString() };
+    const old = state.editId ? state.data.entries.find((x) => x.id === state.editId) : null;
+    const entry = {
+      ...(old || { id: uuid(), createdAt: new Date().toISOString() }),
+      tripId: state.tripId, kind: 'expense', desc: fm.desc.trim(), cat: fm.cat, date: fm.date,
+      amount: r.amt, payer: fm.payer, shares, mode: fm.mode, receipt: state.receipt.ref || '',
+    };
     if (state.receipt.blobUrl) URL.revokeObjectURL(state.receipt.blobUrl);
-    state.form = blankForm();
-    state.receipt = blankReceipt();
-    state.screen = 'balances';
-    await persistAdd(entry, `Added “${entry.desc}” · ${money(entry.amount)}`);
+    pref.set('lastPayer:' + state.tripId, fm.payer);
+    const before = snapshot();
+    await commit(() => {
+      replaceIn('entries', entry);
+      state.form = blankForm();
+      state.receipt = blankReceipt();
+      state.editId = null;
+      state.picker = null;
+      state.screen = old ? 'ledger' : 'balances';
+    }, () => store.saveEntry(entry), () => { state.data = before; }, old ? 'Changes saved' : `Added “${entry.desc}” · ${money(entry.amount)}`);
   },
+
+  // ledger
+  filter(d) { state.filter = d.k; state.openId = null; render(); },
+  toggle(d) { state.openId = state.openId === d.id ? null : d.id; render(); },
+  async del(d) {
+    const gone = state.data.entries.find((e) => e.id === d.id);
+    if (!gone || !window.confirm(`Delete “${rowTitle(gone)}” (${money(gone.amount)}) for everyone?`)) return;
+    const before = snapshot();
+    await commit(() => { removeFrom('entries', d.id); state.openId = null; }, () => store.deleteEntry(d.id), () => { state.data = before; }, 'Entry deleted');
+  },
+  viewReceipt(d) { state.viewUrl = d.url; render(); },
+  closeViewer() { state.viewUrl = ''; render(); },
+  removeReceipt() { if (state.receipt.blobUrl) URL.revokeObjectURL(state.receipt.blobUrl); state.receipt = blankReceipt(); render(); },
+
+  // settle
   async record(d) {
-    const calc = computeBalances(state.entries, IDS);
-    const t = minimalTransfers(calc.net, IDS)[Number(d.i)];
+    const ids = tripIds();
+    const calc = computeBalances(tripEntries(), ids);
+    const t = minimalTransfers(calc.net, ids)[Number(d.i)];
     if (!t) return;
-    const entry = { id: uuid(), kind: 'payment', from: t.from, to: t.to, amount: t.amount, date: todayISO(), shares: {}, createdAt: new Date().toISOString() };
-    await persistAdd(entry, `Recorded: ${nameOf(t.from)} paid ${nameOf(t.to)} ${money(t.amount)}`);
+    const entry = { id: uuid(), tripId: state.tripId, kind: 'payment', from: t.from, to: t.to, amount: t.amount, date: todayISO(), shares: {}, createdAt: new Date().toISOString() };
+    const before = snapshot();
+    await commit(() => replaceIn('entries', entry), () => store.saveEntry(entry), () => { state.data = before; }, `Recorded: ${nameOf(t.from)} paid ${nameOf(t.to)} ${money(t.amount)}`);
   },
   async share() {
-    const calc = computeBalances(state.entries, IDS);
-    const text = summaryText(calc, minimalTransfers(calc.net, IDS));
+    const trip = curTrip();
+    const ids = tripIds();
+    const calc = computeBalances(tripEntries(), ids);
+    const text = summaryText(trip, calc, minimalTransfers(calc.net, ids), ids);
     if (navigator.share) { try { await navigator.share({ text }); } catch {} return; }
     try { await navigator.clipboard.writeText(text); flash('Summary copied'); } catch { flash('Copy blocked — select the text instead'); }
   },
-  removeReceipt() { if (state.receipt.blobUrl) URL.revokeObjectURL(state.receipt.blobUrl); state.receipt = blankReceipt(); render(); },
-  async loadSample() { const s = sampleEntries(); await store.addMany(s); await refresh(); },
-  async clearLocal() {
-    if (!window.confirm('Delete every expense and receipt stored on this phone?')) return;
-    await store.clear(); await refresh();
-  },
-  newTrip() {
-    const id = newTripId();
-    location.hash = 'trip=' + id;
-    location.reload();
-  },
-};
 
-function confirmDelete(e) {
-  return window.confirm(`Delete “${rowTitle(e)}” (${money(e.amount)}) for everyone?`);
-}
+  // setup / demo
+  async loadSample() {
+    const s = sampleData();
+    await store.saveMany(s);
+    await refresh();
+    selectTrip(s.trips[0].id);
+    state.screen = 'balances';
+    render();
+  },
+  newGroup() { location.hash = 'group=' + newGroupId(); location.reload(); },
+};
 
 // ---------- receipt capture ----------
 function toJpeg(file, max = 1600, quality = 0.85) {
@@ -492,7 +924,6 @@ async function handleReceipt(file) {
   state.receipt = { status: 'reading', blobUrl: URL.createObjectURL(file), ref: '', note: '' };
   render();
   const cloud = store.mode === 'cloud';
-  // Local mode stores a smaller image so localStorage doesn't fill up.
   const blob = await toJpeg(file, cloud ? 1600 : 1000, cloud ? 0.85 : 0.7);
   const [ref, data] = await Promise.all([
     store.uploadReceipt(blob).catch(() => ''),
@@ -521,19 +952,30 @@ async function handleReceipt(file) {
 }
 
 // ---------- sample data (local demo only) ----------
-function sampleEntries() {
-  const [A, B, C] = IDS;
+function sampleData() {
+  const now = new Date().toISOString();
   const y = new Date().getFullYear();
-  const mk = (o) => ({ id: uuid(), createdAt: new Date().toISOString(), shares: {}, receipt: '', ...o });
-  return [
-    mk({ kind: 'expense', desc: 'Apartment, 7 nights', cat: 'Lodging', date: `${y}-10-10`, amount: 186000, payer: A, mode: 'equal', shares: { [A]: 62000, [B]: 62000, [C]: 62000 } }),
-    mk({ kind: 'expense', desc: 'Rental car', cat: 'Transport', date: `${y}-10-10`, amount: 41250, payer: B, mode: 'equal', shares: { [A]: 13750, [B]: 13750, [C]: 13750 } }),
-    mk({ kind: 'expense', desc: 'Market groceries', cat: 'Groceries', date: `${y}-10-11`, amount: 9630, payer: C, mode: 'equal', shares: { [A]: 3210, [B]: 3210, [C]: 3210 } }),
-    mk({ kind: 'expense', desc: 'Dinner out', cat: 'Food', date: `${y}-10-12`, amount: 14800, payer: B, mode: 'equal', shares: { [B]: 7400, [C]: 7400 } }),
-    mk({ kind: 'expense', desc: 'Show tickets', cat: 'Activities', date: `${y}-10-13`, amount: 9000, payer: C, mode: 'equal', shares: { [A]: 4500, [C]: 4500 } }),
-    mk({ kind: 'expense', desc: 'Surf lessons', cat: 'Activities', date: `${y}-10-14`, amount: 21000, payer: C, mode: 'exact', shares: { [B]: 14000, [C]: 7000 } }),
-    mk({ kind: 'payment', from: C, to: A, amount: 20000, date: `${y}-10-15` }),
-  ];
+  const person = (name, color, phone = '') => ({ id: uuid(), name, phone, email: '', color, createdAt: now });
+  const [E, M, J, S] = [person('Eric', 0), person('Maya', 1), person('Jon', 2), person('Sam', 3)];
+  const lisbon = { id: uuid(), name: 'Lisbon (sample)', currency: '€', start: `${y}-10-10`, end: `${y}-10-17`, members: [E.id, M.id, J.id], createdAt: now };
+  const ski = { id: uuid(), name: 'Ski weekend (sample)', currency: '$', start: `${y}-02-06`, end: `${y}-02-08`, members: [E.id, S.id], createdAt: now };
+  const x = (trip, o) => ({ id: uuid(), tripId: trip.id, createdAt: now, shares: {}, receipt: '', ...o });
+  const eq3 = (c) => ({ [E.id]: c, [M.id]: c, [J.id]: c });
+  return {
+    parties: [E, M, J, S],
+    trips: [lisbon, ski],
+    entries: [
+      x(lisbon, { kind: 'expense', desc: 'Apartment, 7 nights', cat: 'Lodging', date: `${y}-10-10`, amount: 186000, payer: E.id, mode: 'equal', shares: eq3(62000) }),
+      x(lisbon, { kind: 'expense', desc: 'Rental car', cat: 'Transport', date: `${y}-10-10`, amount: 41250, payer: M.id, mode: 'equal', shares: eq3(13750) }),
+      x(lisbon, { kind: 'expense', desc: 'Market groceries', cat: 'Groceries', date: `${y}-10-11`, amount: 9630, payer: J.id, mode: 'equal', shares: eq3(3210) }),
+      x(lisbon, { kind: 'expense', desc: 'Dinner out', cat: 'Food', date: `${y}-10-12`, amount: 14800, payer: M.id, mode: 'equal', shares: { [M.id]: 7400, [J.id]: 7400 } }),
+      x(lisbon, { kind: 'expense', desc: 'Show tickets', cat: 'Activities', date: `${y}-10-13`, amount: 9000, payer: J.id, mode: 'equal', shares: { [E.id]: 4500, [J.id]: 4500 } }),
+      x(lisbon, { kind: 'expense', desc: 'Surf lessons', cat: 'Activities', date: `${y}-10-14`, amount: 21000, payer: J.id, mode: 'exact', shares: { [M.id]: 14000, [J.id]: 7000 } }),
+      x(lisbon, { kind: 'payment', from: J.id, to: E.id, amount: 20000, date: `${y}-10-15` }),
+      x(ski, { kind: 'expense', desc: 'Cabin', cat: 'Lodging', date: `${y}-02-06`, amount: 64000, payer: S.id, mode: 'equal', shares: { [E.id]: 32000, [S.id]: 32000 } }),
+      x(ski, { kind: 'expense', desc: 'Lift tickets', cat: 'Activities', date: `${y}-02-07`, amount: 31800, payer: E.id, mode: 'equal', shares: { [E.id]: 15900, [S.id]: 15900 } }),
+    ],
+  };
 }
 
 // ---------- events ----------
@@ -545,11 +987,18 @@ document.addEventListener('click', (ev) => {
 });
 document.addEventListener('input', (ev) => {
   const el = ev.target;
-  const f = el.dataset && el.dataset.field;
-  if (!f) return;
-  if (f === 'custom') state.form.custom[el.dataset.id] = el.value;
-  else state.form[f] = el.value;
-  updateAddLive();
+  const ds = el.dataset || {};
+  if (ds.field) {
+    if (ds.field === 'custom') state.form.custom[ds.id] = el.value;
+    else state.form[ds.field] = el.value;
+    updateAddLive();
+  } else if (ds.np) state.newPerson[ds.np] = el.value;
+  else if (ds.tf && state.tripForm) state.tripForm[ds.tf] = el.value;
+  else if (ds.pf && state.personForm) state.personForm[ds.pf] = el.value;
+});
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape' && state.viewUrl) { state.viewUrl = ''; render(); }
+  if (ev.key === 'Enter' && ev.target.dataset && ev.target.dataset.np) { ev.preventDefault(); actions.createPerson(); }
 });
 document.addEventListener('change', (ev) => {
   if (ev.target.id === 'receipt-input') {
@@ -558,26 +1007,41 @@ document.addEventListener('change', (ev) => {
     handleReceipt(file);
   }
 });
-document.addEventListener('keydown', (ev) => {
-  if (ev.key === 'Escape' && state.viewUrl) { state.viewUrl = ''; render(); }
-});
+
+// Default the payer to whoever paid last on this trip (or the first person).
+const _blankForm = blankForm;
+function formWithDefaults() {
+  const f = _blankForm();
+  const ids = tripIds();
+  const last = pref.get('lastPayer:' + state.tripId);
+  f.payer = ids.includes(last) ? last : ids[0] || '';
+  return f;
+}
+const origGo = actions.go;
+actions.go = (d) => {
+  if (d.screen === 'add' && !state.editId && !state.form.amt && !state.form.desc) state.form = formWithDefaults();
+  origGo(d);
+};
 
 // ---------- boot ----------
 async function boot() {
-  const tripId = readTripId();
-  if (CLOUD_CONFIGURED && !tripId) { state.needsTrip = true; render(); return; }
+  const groupId = readGroupId();
+  if (CLOUD_CONFIGURED && !groupId) { state.needsGroup = true; render(); return; }
   try {
-    store = await createStore(CONFIG, tripId);
+    store = await createStore(CONFIG, groupId);
   } catch (err) {
     state.loading = false;
     state.error = 'Couldn’t reach the shared database. ' + ((err && err.message) || '');
     render();
     return;
   }
+  state.tripId = pref.get('activeTrip');
   render();
   await refresh();
+  if (!curTrip()) state.screen = 'trips';
+  render();
   if (store.mode === 'cloud') {
-    // Light polling keeps all three phones in step while the app is open.
+    // Light polling keeps everyone's phones in step while the app is open.
     setInterval(() => { if (document.visibilityState === 'visible') refresh(); }, 15000);
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refresh(); });
   }

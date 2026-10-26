@@ -1,17 +1,11 @@
 // Edit this file before deploying. Everything here is public once on GitHub Pages.
+// Trips and people are managed inside the app, not here.
 export const CONFIG = {
-  tripName: 'Our trip',
-  currency: '$',
-
-  // Exactly three parties. Ids are short, permanent keys; names can change any time.
-  parties: [
-    { id: 'A', name: 'Eric' },
-    { id: 'B', name: 'Party 2' },
-    { id: 'C', name: 'Party 3' },
-  ],
+  // Currency for new trips (each trip can change it).
+  defaultCurrency: '$',
 
   // Leave both blank for local demo mode (data stays on one phone, no receipt reading).
-  // Fill them in after setting up Supabase (see README) to sync all three phones.
+  // Fill them in after setting up Supabase (see README) to share trips across phones.
   supabaseUrl: '',
   supabaseAnonKey: '',
 };

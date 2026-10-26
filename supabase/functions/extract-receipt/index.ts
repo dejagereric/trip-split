@@ -5,7 +5,7 @@
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-trip-id',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-group-id',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 const CATEGORIES = ['Lodging', 'Food', 'Transport', 'Activities', 'Groceries', 'Other'];
