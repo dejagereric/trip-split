@@ -7,6 +7,7 @@
 //   saveTrip(t)  deleteTrip(id)        (deleting a trip deletes its expenses)
 //   saveParty(p) deleteParty(id)
 //   saveEntry(e) deleteEntry(id)
+//   saveCategory(c) deleteCategory(id) renameCategoryInEntries(oldName, newName)
 //   saveMany({ trips, parties, entries })
 //   uploadReceipt(blob) -> ref   receiptUrl(ref) (sync, '' until signed)   signReceipt(ref)
 //   extract(blob) -> data|null
@@ -14,6 +15,9 @@
 //
 // Cloud only: auth.{user, sendCode, verifyCode, signOut}, listGroups, createGroup,
 //   useGroup(id), groupId, members, addMember(email), removeMember(email)
+
+export const DEFAULT_CATEGORIES = ['Lodging', 'Food', 'Transport', 'Activities', 'Groceries', 'Yacht charter', 'Boat expenses', 'Other'];
+const defaultCategoryRows = () => DEFAULT_CATEGORIES.map((name, i) => ({ id: 'local-cat-' + i, name, sort: (i + 1) * 10 }));
 
 const SUPABASE_JS = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/+esm';
 
@@ -40,9 +44,13 @@ const upsertById = (list, item) => {
 // ---------- local (this browser only, no sign-in) ----------
 function localStore(groupId) {
   const key = 'tripsplit:v2:' + groupId;
-  const empty = () => ({ trips: [], parties: [], entries: [] });
+  const empty = () => ({ trips: [], parties: [], entries: [], categories: defaultCategoryRows() });
   const read = () => {
-    try { return { ...empty(), ...JSON.parse(localStorage.getItem(key) || '{}') }; } catch { return empty(); }
+    try {
+      const d = { ...empty(), ...JSON.parse(localStorage.getItem(key) || '{}') };
+      if (!d.categories || !d.categories.length) d.categories = defaultCategoryRows();
+      return d;
+    } catch { return empty(); }
   };
   const write = (d) => {
     try { localStorage.setItem(key, JSON.stringify(d)); } catch { throw new Error('storage_full'); }
@@ -58,6 +66,9 @@ function localStore(groupId) {
     async deleteParty(id) { update((d) => { d.parties = d.parties.filter((p) => p.id !== id); }); },
     async saveEntry(e) { update((d) => { d.entries = upsertById(d.entries, e); }); },
     async deleteEntry(id) { update((d) => { d.entries = d.entries.filter((e) => e.id !== id); }); },
+    async saveCategory(c) { update((d) => { d.categories = upsertById(d.categories, c); }); },
+    async deleteCategory(id) { update((d) => { d.categories = d.categories.filter((c) => c.id !== id); }); },
+    async renameCategoryInEntries(from, to) { update((d) => { d.entries.forEach((e) => { if (e.cat === from) e.cat = to; }); }); },
     async saveMany(more) {
       update((d) => {
         (more.parties || []).forEach((p) => { d.parties = upsertById(d.parties, p); });
@@ -129,12 +140,13 @@ async function cloudStore(config) {
     async removeMember(email) { must(await sb.from('group_members').delete().eq('group_id', groupId).eq('email', email)); },
 
     async load() {
-      const [trips, parties, entries] = await Promise.all([
+      const [trips, parties, entries, categories] = await Promise.all([
         sb.from('trips').select('*').eq('group_id', groupId).then(must),
         sb.from('parties').select('*').eq('group_id', groupId).then(must),
         sb.from('entries').select('*').eq('group_id', groupId).order('created_at').then(must),
+        sb.from('categories').select('id, name, sort').eq('group_id', groupId).order('sort').then(must),
       ]);
-      return { trips: trips.map(tripFrom), parties: parties.map(partyFrom), entries: entries.map(entryFrom) };
+      return { trips: trips.map(tripFrom), parties: parties.map(partyFrom), entries: entries.map(entryFrom), categories };
     },
     async saveTrip(t) { must(await sb.from('trips').upsert(tripRow(t))); },
     async deleteTrip(id) { must(await sb.from('trips').delete().eq('id', id)); },
@@ -142,6 +154,9 @@ async function cloudStore(config) {
     async deleteParty(id) { must(await sb.from('parties').delete().eq('id', id)); },
     async saveEntry(e) { must(await sb.from('entries').upsert(entryRow(e))); },
     async deleteEntry(id) { must(await sb.from('entries').delete().eq('id', id)); },
+    async saveCategory(c) { must(await sb.from('categories').upsert({ id: c.id, group_id: groupId, name: c.name, sort: c.sort })); },
+    async deleteCategory(id) { must(await sb.from('categories').delete().eq('id', id)); },
+    async renameCategoryInEntries(from, to) { must(await sb.from('entries').update({ category: to }).eq('group_id', groupId).eq('category', from)); },
     async saveMany(more) {
       if (more.parties?.length) must(await sb.from('parties').upsert(more.parties.map(partyRow)));
       if (more.trips?.length) must(await sb.from('trips').upsert(more.trips.map(tripRow)));
@@ -174,12 +189,12 @@ async function cloudStore(config) {
       if (!data || !(Number(data.rate) > 0)) throw new Error('rate_unavailable');
       return { rate: Number(data.rate), date: data.date || date };
     },
-    async extract(blob) {
+    async extract(blob, categories) {
       const dataUrl = await blobToDataURL(blob);
       const image = dataUrl.slice(dataUrl.indexOf(',') + 1);
       const { data, error } = await sb.functions.invoke('extract-receipt', {
         headers: { 'x-group-id': groupId },
-        body: { image, mediaType: blob.type || 'image/jpeg', year: new Date().getFullYear() },
+        body: { image, mediaType: blob.type || 'image/jpeg', year: new Date().getFullYear(), categories },
       });
       if (error) throw error;
       return data && !data.error ? data : null;

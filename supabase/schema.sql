@@ -87,6 +87,7 @@ begin
   values (coalesce(nullif(trim(group_name), ''), 'Our trips'), auth.uid())
   returning id into gid;
   insert into public.group_members (group_id, email, role) values (gid, me, 'owner');
+  perform private.seed_categories(gid);
   return gid;
 end $$;
 
@@ -161,12 +162,35 @@ create index if not exists trips_group_idx   on public.trips (group_id);
 create index if not exists entries_trip_idx  on public.entries (trip_id, created_at);
 create index if not exists entries_group_idx on public.entries (group_id);
 
+-- Expense categories, shared by all of a group's trips. Entries keep the category name as text.
+create table if not exists public.categories (
+  id          uuid primary key default gen_random_uuid(),
+  group_id    uuid not null references public.groups(id) on delete cascade,
+  name        text not null check (length(trim(name)) between 1 and 40),
+  sort        integer not null default 0,
+  created_at  timestamptz not null default now(),
+  unique (group_id, name)
+);
+create index if not exists categories_group_idx on public.categories (group_id, sort);
+
+-- Starting list for a group.
+create or replace function private.seed_categories(g uuid) returns void
+language sql security definer set search_path = '' as $$
+  insert into public.categories (group_id, name, sort)
+  select g, c.name, c.sort from (values
+    ('Lodging', 10), ('Food', 20), ('Transport', 30), ('Activities', 40), ('Groceries', 50),
+    ('Yacht charter', 60), ('Boat expenses', 70), ('Other', 80)) as c(name, sort)
+  on conflict (group_id, name) do nothing
+$$;
+revoke all on function private.seed_categories(uuid) from public, anon, authenticated;
+
 -- ---------- row-level security ----------
 alter table public.groups        enable row level security;
 alter table public.group_members enable row level security;
 alter table public.parties       enable row level security;
 alter table public.trips         enable row level security;
 alter table public.entries       enable row level security;
+alter table public.categories    enable row level security;
 
 drop policy if exists "members read group"  on public.groups;
 drop policy if exists "owners rename group" on public.groups;
@@ -189,14 +213,14 @@ create policy "remove member or leave" on public.group_members for delete to aut
 do $$
 declare t text;
 begin
-  foreach t in array array['parties', 'trips', 'entries'] loop
+  foreach t in array array['parties', 'trips', 'entries', 'categories'] loop
     execute format('drop policy if exists "group members only" on public.%I', t);
     execute format('create policy "group members only" on public.%I for all to authenticated using (private.is_member(group_id)) with check (private.is_member(group_id))', t);
   end loop;
 end $$;
 
 -- Nothing is readable without signing in.
-revoke all on public.groups, public.group_members, public.parties, public.trips, public.entries from anon;
+revoke all on public.groups, public.group_members, public.parties, public.trips, public.entries, public.categories from anon;
 
 -- ---------- receipt photos (private) ----------
 insert into storage.buckets (id, name, public)

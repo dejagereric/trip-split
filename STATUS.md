@@ -16,6 +16,8 @@ _Last updated: October 26, 2026_
 - `js/config.js` has the project URL and publishable key.
 - **Signed-in user ("you"):** a one-time Your details screen (name and phone). You're the default payer and sharer on new expenses (tap your name to take yourself off), new trips start with you, and expenses record who added them (`entries.created_by_email`).
 - **Multi-currency (Oct 26):** each trip has a trip currency (ISO code) plus a short list of preferred currencies (`trips.currencies`, USD and EUR first). On an expense, tap the currency button to pick from the trip's list, or "Other currency" (that adds it to the trip). New expenses default to the last currency used. The day's rate comes from the `fx-rate` edge function (Frankfurter v2) and can be overridden. Stored per expense: `orig_amount_cents`, `orig_currency`, `fx_rate`, `fx_date`; `amount_cents` is always in the trip currency. Receipts set the currency. The Ledger shows both amounts. The trip currency is locked once the trip has expenses.
+- **Ledger:** newest first (fixed order), Search, and Export (CSV now; Google Sheets once `googleClientId` is set; see README → Google Sheets export setup).
+- **Categories:** `categories` table, shared per group, managed under Trips → Categories. Yacht charter and Boat expenses added. The receipt reader uses the group's list.
 - **Layout:** the app is pinned to the visible screen (fixed position), which fixes the tab bar dropping below the screen on Android.
 
 ## Next: custom domain `trips.ericdejager.com`
@@ -40,6 +42,11 @@ Do these in order (the DNS record must exist before GitHub switches addresses):
 3. [ ] Create a trip, scan a real receipt, save an expense.
 4. [ ] Access → Give access to one companion → Invite. Have them sign in and confirm they see the trip.
 5. [ ] If anything fails, Claude checks the auth, database and function logs through the Supabase connector.
+
+## Waiting on Eric
+
+- [ ] Google Cloud OAuth client ID for Sheets export (README → Google Sheets export setup), then Claude puts it in `js/config.js`.
+- [ ] Confirm the bottom tab bar now stays put on the Pixel (Balances and Ledger).
 
 ## Later / optional
 

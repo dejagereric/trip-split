@@ -1,6 +1,7 @@
 import { CONFIG } from './config.js';
 import { cents, splitEqual, computeBalances, minimalTransfers, convert, convertShares } from './logic.js';
-import { createStore } from './store.js';
+import { createStore, DEFAULT_CATEGORIES } from './store.js';
+import { buildTables, downloadCsv, preloadGoogle, exportToGoogle } from './export.js';
 
 // ---------- constants ----------
 const PALETTE = ['#3346C8', '#F2A33A', '#13806F', '#B5365B', '#6C47C2', '#8DB33A', '#1F6FB2', '#C05621'];
@@ -24,11 +25,11 @@ function tripCurrencies(trip) {
   if (!list.includes(ledger)) list.unshift(ledger);
   return list.filter((c, i) => list.indexOf(c) === i);
 }
-const CATS = ['Lodging', 'Food', 'Transport', 'Activities', 'Groceries', 'Other'];
+
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const TRIP_SCREENS = ['balances', 'add', 'ledger', 'settle'];
-const TITLES = { balances: 'Balances', add: 'Add expense', ledger: 'Ledger', settle: 'Settle up', trips: 'Trips', tripEdit: 'Trip', people: 'People', personEdit: 'Person', access: 'Access', me: 'Your details' };
-const MANAGE_LISTS = ['trips', 'people', 'access'];
+const TITLES = { balances: 'Balances', add: 'Add expense', ledger: 'Ledger', settle: 'Settle up', trips: 'Trips', tripEdit: 'Trip', people: 'People', personEdit: 'Person', access: 'Access', me: 'Your details', categories: 'Categories' };
+const MANAGE_LISTS = ['trips', 'people', 'categories', 'access'];
 const CAN_PICK_CONTACTS = typeof navigator !== 'undefined' && 'contacts' in navigator && typeof navigator.contacts?.select === 'function';
 
 // ---------- helpers ----------
@@ -67,6 +68,11 @@ const ICON = {
   arrow: '<svg viewBox="0 0 28 20" aria-hidden="true"><path d="M2 10h22M18 4l6 6-6 6"/></svg>',
   chevron: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>',
   back: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>',
+  search: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>',
+  export: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7.5 8.5L12 4l4.5 4.5M5 14v5h14v-5"/></svg>',
+  up: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg>',
+  down: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>',
+  trash: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>',
   contacts: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="9" r="3.5"/><path d="M5.5 19a6.5 6.5 0 0 1 13 0"/></svg>',
 };
 
@@ -82,7 +88,9 @@ const blankReceipt = () => ({ status: 'idle', blobUrl: '', ref: '', note: '' });
 const state = {
   screen: 'balances',
   tripId: '',
-  data: { trips: [], parties: [], entries: [] },
+  data: { trips: [], parties: [], entries: [], categories: [] },
+  newCat: '',
+  catEdit: null, // { id, name } while renaming
   filter: 'all',
   openId: null,
   form: blankForm(),
@@ -107,6 +115,11 @@ const state = {
   groups: [],
   members: [],
   newMember: '',
+  search: '',
+  searchOpen: false,
+  exportOpen: false,
+  exportBusy: false,
+  exportUrl: '',
 };
 let store = null;
 let toastTimer = 0;
@@ -292,9 +305,10 @@ function manageHeaderHtml(trip) {
   return `<header class="top">
     <div class="top-row">${back}<span class="sync">${esc(syncLabel())}</span></div>
     <h1>${title}</h1>
-    ${inList ? `<div class="seg${store?.mode === 'cloud' ? ' seg3' : ''}" role="group" aria-label="Manage">
+    ${inList ? `<div class="seg${store?.mode === 'cloud' ? ' seg4' : ' seg3'}" role="group" aria-label="Manage">
       <button type="button" class="${state.screen === 'trips' ? 'on' : ''}" data-action="go" data-screen="trips" aria-pressed="${state.screen === 'trips'}">Trips</button>
       <button type="button" class="${state.screen === 'people' ? 'on' : ''}" data-action="go" data-screen="people" aria-pressed="${state.screen === 'people'}">People</button>
+      <button type="button" class="${state.screen === 'categories' ? 'on' : ''}" data-action="go" data-screen="categories" aria-pressed="${state.screen === 'categories'}">Categories</button>
       ${store?.mode === 'cloud' ? `<button type="button" class="${state.screen === 'access' ? 'on' : ''}" data-action="go" data-screen="access" aria-pressed="${state.screen === 'access'}">Access</button>` : ''}
     </div>` : ''}
   </header>`;
@@ -326,6 +340,7 @@ function screenHtml() {
     case 'personEdit': return personEditHtml();
     case 'me': return meHtml();
     case 'access': return accessHtml();
+    case 'categories': return categoriesHtml();
     case 'add': return addHtml();
     case 'ledger': return ledgerHtml();
     case 'settle': return settleHtml();
@@ -473,6 +488,51 @@ function openMe() {
   const me = partyById(myPartyId());
   state.meForm = { name: me?.name || '', phone: me?.phone || '' };
   state.screen = 'me';
+}
+
+// ----- categories (shared by the group's trips) -----
+const sortedCats = () => state.data.categories.slice().sort((a, b) => (a.sort - b.sort) || a.name.localeCompare(b.name));
+const catNames = () => (state.data.categories.length ? sortedCats().map((c) => c.name) : DEFAULT_CATEGORIES.slice());
+// Categories offered on an expense: the group's list, plus the expense's own if it was deleted since.
+function formCats() {
+  const list = catNames();
+  const cur = state.form.cat;
+  if (!list.includes(cur)) {
+    if (state.editId && cur) return list.concat([cur]);
+    state.form.cat = list.includes('Food') ? 'Food' : list[0] || '';
+  }
+  return list;
+}
+
+function categoriesHtml() {
+  const cats = sortedCats();
+  const usage = (name) => state.data.entries.filter((e) => e.kind !== 'payment' && e.cat === name).length;
+  return `<div class="stack">
+    <p class="small muted note">Shared by all of this group’s trips, in the order shown on Add expense. Receipt scans pick from this list.</p>
+    <div class="card tight">
+      ${cats.map((c, i) => {
+        const n = usage(c.name);
+        if (state.catEdit && state.catEdit.id === c.id) {
+          return `<div class="list-row cat-row">
+            <input data-catedit="1" type="text" maxlength="40" aria-label="Category name" value="${esc(state.catEdit.name)}">
+            <button type="button" class="btn small-btn primary" data-action="saveCatName">Save</button>
+            <button type="button" class="btn small-btn" data-action="cancelCatName">Cancel</button>
+          </div>`;
+        }
+        return `<div class="list-row cat-row">
+          <span class="grow"><span class="strong">${esc(c.name)}</span><span class="small muted">${n ? plural(n, 'expense', 'expenses') : 'Not used yet'}</span></span>
+          <button type="button" class="icon-btn" data-action="moveCat" data-id="${esc(c.id)}" data-dir="-1" aria-label="Move ${esc(c.name)} up" ${i === 0 ? 'disabled' : ''}>${ICON.up}</button>
+          <button type="button" class="icon-btn" data-action="moveCat" data-id="${esc(c.id)}" data-dir="1" aria-label="Move ${esc(c.name)} down" ${i === cats.length - 1 ? 'disabled' : ''}>${ICON.down}</button>
+          <button type="button" class="btn small-btn" data-action="editCat" data-id="${esc(c.id)}">Rename</button>
+          <button type="button" class="icon-btn danger-icon" data-action="deleteCat" data-id="${esc(c.id)}" aria-label="Delete ${esc(c.name)}" ${cats.length <= 1 ? 'disabled' : ''}>${ICON.trash}</button>
+        </div>`;
+      }).join('')}
+    </div>
+    <div class="newperson">
+      <input data-newcat="1" type="text" maxlength="40" autocomplete="off" placeholder="New category, e.g. Fuel" aria-label="New category name" value="${esc(state.newCat)}">
+      <button type="button" class="btn primary" data-action="addCat">Add category</button>
+    </div>
+  </div>`;
 }
 
 // ----- access (cloud) -----
@@ -705,7 +765,7 @@ function addHtml() {
     <label class="field"><span class="lbl">Date</span><input data-field="date" type="date" value="${esc(fm.date)}"></label>
 
     <div class="field"><span class="lbl">Category</span>
-      <div class="wrap">${CATS.map((c) => chip(esc(c), 'cat', { cat: c }, fm.cat === c)).join('')}</div>
+      <div class="wrap">${formCats().map((c) => chip(esc(c), 'cat', { cat: c }, fm.cat === c)).join('')}</div>
     </div>
 
     <div class="field"><span class="lbl">Who paid?</span>
@@ -751,7 +811,6 @@ function ledgerHtml() {
   const ids = tripIds();
   const es = tripEntries();
   const calc = computeBalances(es, ids);
-  const rows = sortEntries(es).filter((e) => f === 'all' || entryPeople(e).includes(f));
   let focus = '';
   if (f !== 'all' && ids.includes(f)) {
     const partN = es.filter((e) => e.kind !== 'payment' && (e.shares[f] || 0) > 0).length;
@@ -764,10 +823,48 @@ function ledgerHtml() {
       <span class="small lbl-dark-soft">Took part in ${partN} of ${calc.expCount} expenses</span>
     </div>`;
   }
+  const google = !!CONFIG.googleClientId;
   return `<div class="stack">
+    <div class="ledger-tools">
+      <button type="button" class="btn tool${state.searchOpen ? ' on' : ''}" data-action="toggleSearch" aria-expanded="${!!state.searchOpen}">${ICON.search}Search</button>
+      <button type="button" class="btn tool${state.exportOpen ? ' on' : ''}" data-action="toggleExport" aria-expanded="${!!state.exportOpen}" ${es.length ? '' : 'disabled'}>${ICON.export}Export</button>
+    </div>
+    ${state.searchOpen ? `<div class="search-row">
+      <input id="ledger-search" data-search="1" type="search" enterkeyhint="search" autocomplete="off" placeholder="Search description, person, amount, date…" aria-label="Search the ledger" value="${esc(state.search)}">
+    </div>` : ''}
+    ${state.exportOpen ? `<div class="card export-card">
+      <span class="strong">Export this trip’s full ledger</span>
+      <span class="small muted">Every entry, plus balances and settle-up, on separate tabs. Amounts in ${esc(CUR)}, with the original currency and rate.</span>
+      ${google ? `<button type="button" class="btn primary" data-action="exportGoogle" ${state.exportBusy ? 'disabled' : ''}>${state.exportBusy ? 'Creating spreadsheet…' : 'Create Google Sheet'}</button>` : ''}
+      ${state.exportUrl ? `<a class="btn" href="${esc(state.exportUrl)}" target="_blank" rel="noopener">Open the spreadsheet</a>` : ''}
+      <button type="button" class="btn" data-action="exportCsv">Download CSV</button>
+      ${google ? '' : '<span class="small muted">Google Sheets export switches on once the app has a Google client ID (see README). The CSV opens in Google Sheets or Excel.</span>'}
+    </div>` : ''}
     <div class="wrap">${[['all', 'All']].concat(ids.map((id) => [id, nameOf(id)])).map(([k, l]) => chip(esc(l), 'filter', { k }, f === k)).join('')}</div>
     ${focus}
-    ${rows.length ? rows.map((e) => {
+    <div id="ledger-list" class="stack">${ledgerListHtml()}</div>
+  </div>`;
+}
+
+// Text a search can match: description, category, people, amounts, currency, date.
+function searchText(e) {
+  const people = entryPeople(e).map(nameOf);
+  const amounts = [e.amount, e.origAmount].filter((c) => c != null).flatMap((c) => [(c / 100).toFixed(2), String(Math.round(c / 100))]);
+  return [rowTitle(e), e.cat, e.kind === 'payment' ? 'payment settle' : '', ...people, ...amounts,
+    money(e.amount), e.origCurrency ? money(e.origAmount, e.origCurrency) : '', e.origCurrency || CUR,
+    e.date, fmtDay(e.date)].join(' ').toLowerCase();
+}
+
+// Newest first (by date, then by when it was added). The order is fixed; search narrows it.
+function ledgerListHtml() {
+  const f = state.filter;
+  const q = (state.searchOpen ? state.search : '').trim().toLowerCase();
+  const terms = q.split(/\s+/).filter(Boolean);
+  const rows = sortEntries(tripEntries())
+    .filter((e) => f === 'all' || entryPeople(e).includes(f))
+    .filter((e) => { if (!terms.length) return true; const t = searchText(e); return terms.every((w) => t.includes(w)); });
+  if (!rows.length) return `<p class="muted center pad">${terms.length ? 'No entries match “' + esc(state.search.trim()) + '”.' : 'Nothing here yet.'}</p>`;
+  return (terms.length ? `<p class="small muted note">${rows.length} ${rows.length === 1 ? 'match' : 'matches'}</p>` : '') + rows.map((e) => {
       const open = state.openId === e.id;
       const dots = (e.kind === 'payment' ? [e.from, e.to] : Object.keys(e.shares).filter((id) => e.shares[id] > 0)).map((id) => av(id, 'dot')).join('');
       const rurl = open ? receiptSrc(e.receipt) : '';
@@ -786,8 +883,7 @@ function ledgerHtml() {
           </div>
         </div>` : ''}
       </div>`;
-    }).join('') : '<p class="muted center pad">Nothing here yet.</p>'}
-  </div>`;
+    }).join('');
 }
 
 const addedBy = (email) => {
@@ -1016,6 +1112,22 @@ function setFormCurrency(code) {
   render();
 }
 
+function exportTables() {
+  const trip = curTrip();
+  const ids = tripIds();
+  const es = tripEntries();
+  const calc = computeBalances(es, ids);
+  return buildTables({ trip, entries: sortEntries(es), ids, nameOf, calc, transfers: minimalTransfers(calc.net, ids), cur: CUR, addedBy });
+}
+
+// Local demo data made before categories existed: give it the starting list.
+async function ensureCatRows() {
+  if (state.data.categories.length) return;
+  const rows = DEFAULT_CATEGORIES.map((name, i) => ({ id: uuid(), name, sort: (i + 1) * 10 }));
+  state.data.categories = rows;
+  for (const r of rows) { try { await store.saveCategory(r); } catch {} }
+}
+
 // ---------- actions ----------
 const actions = {
   go(d) {
@@ -1217,6 +1329,88 @@ const actions = {
     }, async () => { if (tripAfter) await store.saveTrip(tripAfter); await store.saveEntry(entry); }, () => { state.data = before; }, old ? 'Changes saved' : `Added “${entry.desc}” · ${r.foreign ? money(r.origAmt, r.cur) + ' (' + money(entry.amount) + ')' : money(entry.amount)}`);
   },
 
+  // categories
+  async addCat() {
+    const name = state.newCat.trim().slice(0, 40);
+    if (!name) { flash('Type a category name.'); return; }
+    if (catNames().some((c) => c.toLowerCase() === name.toLowerCase())) { flash(`“${name}” is already a category.`); return; }
+    await ensureCatRows();
+    const maxSort = state.data.categories.reduce((m, c) => Math.max(m, c.sort), 0);
+    const c = { id: uuid(), name, sort: maxSort + 10 };
+    const before = snapshot();
+    state.newCat = '';
+    await commit(() => replaceIn('categories', c), () => store.saveCategory(c), () => { state.data = before; }, `${name} added`);
+  },
+  editCat(d) { const c = state.data.categories.find((x) => x.id === d.id); if (c) { state.catEdit = { id: c.id, name: c.name }; render(); const i = $('[data-catedit]'); if (i) i.focus(); } },
+  cancelCatName() { state.catEdit = null; render(); },
+  async saveCatName() {
+    const ed = state.catEdit;
+    const c = ed && state.data.categories.find((x) => x.id === ed.id);
+    if (!c) return;
+    const name = ed.name.trim().slice(0, 40);
+    if (!name) { flash('Type a category name.'); return; }
+    if (name === c.name) { state.catEdit = null; render(); return; }
+    if (catNames().some((x) => x.toLowerCase() === name.toLowerCase() && x !== c.name)) { flash(`“${name}” is already a category.`); return; }
+    const updated = { ...c, name };
+    const before = snapshot();
+    const oldName = c.name;
+    state.catEdit = null;
+    await commit(() => {
+      replaceIn('categories', updated);
+      state.data.entries = state.data.entries.map((e) => (e.cat === oldName ? { ...e, cat: name } : e));
+    }, async () => { await store.saveCategory(updated); await store.renameCategoryInEntries(oldName, name); }, () => { state.data = before; }, `Renamed to ${name}`);
+  },
+  async moveCat(d) {
+    const cats = sortedCats();
+    const i = cats.findIndex((c) => c.id === d.id);
+    const j = i + Number(d.dir);
+    if (i < 0 || j < 0 || j >= cats.length) return;
+    const a = { ...cats[i], sort: cats[j].sort };
+    const b = { ...cats[j], sort: cats[i].sort };
+    if (a.sort === b.sort) { a.sort = (j + 1) * 10; b.sort = (i + 1) * 10; }
+    const before = snapshot();
+    await commit(() => { replaceIn('categories', a); replaceIn('categories', b); }, async () => { await store.saveCategory(a); await store.saveCategory(b); }, () => { state.data = before; });
+  },
+  async deleteCat(d) {
+    const c = state.data.categories.find((x) => x.id === d.id);
+    if (!c) return;
+    const n = state.data.entries.filter((e) => e.kind !== 'payment' && e.cat === c.name).length;
+    if (!window.confirm(`Delete the “${c.name}” category?${n ? ` ${plural(n, 'expense keeps', 'expenses keep')} it as a label.` : ''}`)) return;
+    const before = snapshot();
+    await commit(() => removeFrom('categories', c.id), () => store.deleteCategory(c.id), () => { state.data = before; }, `${c.name} deleted`);
+  },
+
+  // ledger: search and export
+  toggleSearch() {
+    state.searchOpen = !state.searchOpen;
+    if (!state.searchOpen) state.search = '';
+    render();
+    if (state.searchOpen) { const i = $('#ledger-search'); if (i) i.focus(); }
+  },
+  toggleExport() {
+    state.exportOpen = !state.exportOpen;
+    state.exportUrl = '';
+    if (state.exportOpen && CONFIG.googleClientId) preloadGoogle().catch(() => {});
+    render();
+  },
+  exportCsv() {
+    const { title, tables } = exportTables();
+    downloadCsv(title.replace(/[^\w .()-]+/g, '').replace(/\s+/g, ' ').trim() + '.csv', tables[0].rows);
+  },
+  async exportGoogle() {
+    const { title, tables } = exportTables();
+    state.exportBusy = true; state.exportUrl = ''; render();
+    try {
+      state.exportUrl = await exportToGoogle({ clientId: CONFIG.googleClientId, loginHint: myEmail(), title, tables });
+      state.exportBusy = false;
+      flash('Spreadsheet created in your Google Drive');
+    } catch (err) {
+      state.exportBusy = false;
+      if (err?.message !== 'cancelled') flash('Export failed: ' + (err?.message || 'unknown error'));
+      else render();
+    }
+  },
+
   // ledger
   filter(d) { state.filter = d.k; state.openId = null; render(); },
   toggle(d) { state.openId = state.openId === d.id ? null : d.id; render(); },
@@ -1344,7 +1538,7 @@ const actions = {
   async signOut() {
     if (!window.confirm('Sign out of Trip Split on this device?')) return;
     await store.auth.signOut();
-    Object.assign(state, { auth: 'signedOut', user: null, groups: [], members: [], data: { trips: [], parties: [], entries: [] }, tripId: '', screen: 'balances', authCode: '', authMsg: '' });
+    Object.assign(state, { auth: 'signedOut', user: null, groups: [], members: [], data: { trips: [], parties: [], entries: [], categories: [] }, tripId: '', screen: 'balances', authCode: '', authMsg: '' });
     render();
   },
   async switchGroup(d) { pref.set('activeGroup', d.id); state.screen = 'trips'; await enterGroup(); },
@@ -1407,7 +1601,7 @@ async function handleReceipt(file) {
   const blob = await toJpeg(file, cloud ? 1600 : 1000, cloud ? 0.85 : 0.7);
   const [ref, data] = await Promise.all([
     store.uploadReceipt(blob).catch(() => ''),
-    store.extract(blob).catch(() => null),
+    store.extract(blob, catNames()).catch(() => null),
   ]);
   const patch = {};
   const got = [];
@@ -1416,7 +1610,7 @@ async function handleReceipt(file) {
     if (data.total != null && Number.isFinite(t) && t > 0) { patch.amt = t.toFixed(2); got.push('amount'); }
     if (typeof data.description === 'string' && data.description.trim()) { patch.desc = data.description.trim().slice(0, 80); got.push('description'); }
     if (typeof data.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(data.date)) { patch.date = data.date; got.push('date'); }
-    if (CATS.includes(data.category)) patch.cat = data.category;
+    if (catNames().includes(data.category)) patch.cat = data.category;
   }
   let note;
   if (!cloud) note = 'Photo attached. Enter the details below.';
@@ -1483,12 +1677,17 @@ document.addEventListener('input', (ev) => {
   else if (ds.tf && state.tripForm) state.tripForm[ds.tf] = el.value;
   else if (ds.pf && state.personForm) state.personForm[ds.pf] = el.value;
   else if (ds.mf && state.meForm) state.meForm[ds.mf] = el.value;
+  else if (ds.newcat) state.newCat = el.value;
+  else if (ds.catedit && state.catEdit) state.catEdit.name = el.value;
+  else if (ds.search) { state.search = el.value; const l = $('#ledger-list'); if (l) l.innerHTML = ledgerListHtml(); }
 });
 document.addEventListener('keydown', (ev) => {
   if (ev.key === 'Escape' && state.viewUrl) { state.viewUrl = ''; render(); }
   const ds = ev.target.dataset || {};
   if (ev.key === 'Enter' && ds.np) { ev.preventDefault(); actions.createPerson(); }
   if (ev.key === 'Enter' && ds.nm) { ev.preventDefault(); actions.addMember(); }
+  if (ev.key === 'Enter' && ds.newcat) { ev.preventDefault(); actions.addCat(); }
+  if (ev.key === 'Enter' && ds.catedit) { ev.preventDefault(); actions.saveCatName(); }
   if (ev.key === 'Enter' && ds.auth && !state.authBusy) {
     ev.preventDefault();
     if (ds.auth === 'authEmail') actions.sendCode();

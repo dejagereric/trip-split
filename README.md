@@ -102,6 +102,27 @@ The app checks for changes every 15 seconds while open, and whenever it comes ba
 - Expenses in another currency are converted at **that day's rate** (Frankfurter mid-market rates, through the `fx-rate` Supabase function). You can type your card's actual rate instead. The rate is saved with the expense, so balances never shift later.
 - The Ledger shows what was spent (for example €90.00) and its trip-currency value ($101.13).
 
+## Ledger search and export
+
+- **Order:** the Ledger and Recent list are always newest first, by date (same-day entries by when they were added).
+- **Search** (Ledger → Search) matches descriptions, categories, people, amounts (e.g. `90`), currencies and dates (e.g. `oct 15`). Several words narrow it down.
+- **Export** (Ledger → Export) covers the whole trip, not just what's filtered: a Ledger tab (each entry with amount spent, currency, rate, trip-currency amount and each person's share), a Balances tab and a Settle up tab.
+  - **Download CSV:** always available; opens in Google Sheets, Excel or Numbers.
+  - **Create Google Sheet:** creates the spreadsheet in the signed-in person's own Google Drive. It asks Google for `drive.file` access only, meaning just files this app creates; it can't see the rest of the Drive.
+
+### Google Sheets export setup (one time)
+
+1. Go to [console.cloud.google.com](https://console.cloud.google.com) and create a project, e.g. "Trip Split".
+2. **APIs & Services → Library**: enable **Google Sheets API**.
+3. **Google Auth Platform → Branding**: app name "Trip Split", your support email. **Audience**: External. While it's in *Testing*, add each person who'll export as a test user (or publish it; `drive.file` is a non-sensitive scope).
+4. **Data access → Add scope**: `.../auth/drive.file`.
+5. **Clients → Create client → Web application**. Under *Authorized JavaScript origins* add `https://trips.ericdejager.com`. Copy the **Client ID**.
+6. Put the Client ID in `googleClientId` in `js/config.js`. It's public, like the Supabase key. Bump `VERSION` in `sw.js` and push.
+
+## Categories
+
+Trips → **Categories**: add, rename, reorder (↑ ↓) and delete expense categories. They're shared by all of the group's trips. Renaming updates expenses that used the old name; deleting leaves past expenses labeled as they were. Receipt scans choose from this list. The starting list is Lodging, Food, Transport, Activities, Groceries, Yacht charter, Boat expenses, Other.
+
 ## How the math works
 
 - **Spent:** what a person paid out of pocket on this trip.
