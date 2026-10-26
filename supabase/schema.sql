@@ -35,11 +35,19 @@ create table if not exists public.groups (
 create table if not exists public.group_members (
   group_id  uuid not null references public.groups(id) on delete cascade,
   email     text not null check (email = lower(email) and position('@' in email) > 1),
-  role      text not null default 'member' check (role in ('owner', 'member')),
+  role      text not null default 'user',
   added_at  timestamptz not null default now(),
   primary key (group_id, email)
 );
 create index if not exists group_members_email_idx on public.group_members (email);
+
+-- Roles: 'admin' (Administrators: manage people and access) and 'user' (Users).
+-- Earlier versions used 'owner' / 'member'; convert them.
+alter table public.group_members drop constraint if exists group_members_role_check;
+update public.group_members set role = case role when 'owner' then 'admin' when 'member' then 'user' else role end
+  where role in ('owner', 'member');
+alter table public.group_members alter column role set default 'user';
+alter table public.group_members add constraint group_members_role_check check (role in ('admin', 'user'));
 
 -- Access-check helpers live in a "private" schema that the API doesn't expose;
 -- the access rules below still use them.
@@ -59,10 +67,26 @@ language sql stable security definer set search_path = '' as $$
   select exists (select 1 from public.group_members m where m.group_id = g and m.email = private.my_email())
 $$;
 
-create or replace function private.is_owner(g uuid) returns boolean
+create or replace function private.is_admin(g uuid) returns boolean
 language sql stable security definer set search_path = '' as $$
-  select exists (select 1 from public.group_members m where m.group_id = g and m.email = private.my_email() and m.role = 'owner')
+  select exists (select 1 from public.group_members m where m.group_id = g and m.email = private.my_email() and m.role = 'admin')
 $$;
+
+-- Never leave a group without an Administrator.
+create or replace function private.keep_an_admin() returns trigger
+language plpgsql security definer set search_path = '' as $$
+begin
+  if old.role = 'admin' and (tg_op = 'DELETE' or new.role <> 'admin') then
+    if not exists (select 1 from public.group_members m
+                   where m.group_id = old.group_id and m.role = 'admin' and m.email <> old.email) then
+      raise exception 'A group needs at least one Administrator.';
+    end if;
+  end if;
+  return case when tg_op = 'DELETE' then old else new end;
+end $$;
+drop trigger if exists keep_an_admin on public.group_members;
+create trigger keep_an_admin before update or delete on public.group_members
+  for each row execute function private.keep_an_admin();
 
 -- Same check for storage paths, whose first folder is the group id.
 create or replace function private.is_member_path(folder text) returns boolean
@@ -86,7 +110,7 @@ begin
   insert into public.groups (name, created_by)
   values (coalesce(nullif(trim(group_name), ''), 'Our trips'), auth.uid())
   returning id into gid;
-  insert into public.group_members (group_id, email, role) values (gid, me, 'owner');
+  insert into public.group_members (group_id, email, role) values (gid, me, 'admin');
   perform private.seed_categories(gid);
   return gid;
 end $$;
@@ -195,25 +219,51 @@ alter table public.categories    enable row level security;
 drop policy if exists "members read group"  on public.groups;
 drop policy if exists "owners rename group" on public.groups;
 drop policy if exists "owners delete group" on public.groups;
+drop policy if exists "admins rename group" on public.groups;
+drop policy if exists "admins delete group" on public.groups;
 create policy "members read group"  on public.groups for select to authenticated using (private.is_member(id));
-create policy "owners rename group" on public.groups for update to authenticated using (private.is_owner(id)) with check (private.is_owner(id));
-create policy "owners delete group" on public.groups for delete to authenticated using (private.is_owner(id));
+create policy "admins rename group" on public.groups for update to authenticated using (private.is_admin(id)) with check (private.is_admin(id));
+create policy "admins delete group" on public.groups for delete to authenticated using (private.is_admin(id));
 -- (Groups are created only through create_group().)
 
-drop policy if exists "members see members"   on public.group_members;
-drop policy if exists "members add members"   on public.group_members;
+-- Access: Administrators see and manage everyone; a User sees only their own row.
+drop policy if exists "members see members"    on public.group_members;
+drop policy if exists "members add members"    on public.group_members;
 drop policy if exists "remove member or leave" on public.group_members;
-create policy "members see members" on public.group_members for select to authenticated
+drop policy if exists "admins and self read"   on public.group_members;
+drop policy if exists "admins add"             on public.group_members;
+drop policy if exists "admins change role"     on public.group_members;
+drop policy if exists "admins remove"          on public.group_members;
+create policy "admins and self read" on public.group_members for select to authenticated
+  using (private.is_admin(group_id) or email = private.my_email());
+create policy "admins add" on public.group_members for insert to authenticated
+  with check (private.is_admin(group_id));
+create policy "admins change role" on public.group_members for update to authenticated
+  using (private.is_admin(group_id)) with check (private.is_admin(group_id));
+create policy "admins remove" on public.group_members for delete to authenticated
+  using (private.is_admin(group_id));
+
+-- People: everyone in the group reads names (the ledger needs them); Administrators add /
+-- edit / delete anyone; a User may only create or edit their own record (matching email).
+drop policy if exists "group members only"   on public.parties;
+drop policy if exists "members read people"  on public.parties;
+drop policy if exists "admins or self add"   on public.parties;
+drop policy if exists "admins or self edit"  on public.parties;
+drop policy if exists "admins delete people" on public.parties;
+create policy "members read people" on public.parties for select to authenticated
   using (private.is_member(group_id));
-create policy "members add members" on public.group_members for insert to authenticated
-  with check (private.is_member(group_id) and role = 'member');
-create policy "remove member or leave" on public.group_members for delete to authenticated
-  using (role <> 'owner' and (private.is_owner(group_id) or email = private.my_email()));
+create policy "admins or self add" on public.parties for insert to authenticated
+  with check (private.is_admin(group_id) or (private.is_member(group_id) and lower(coalesce(email, '')) = private.my_email()));
+create policy "admins or self edit" on public.parties for update to authenticated
+  using (private.is_admin(group_id) or (private.is_member(group_id) and lower(coalesce(email, '')) = private.my_email()))
+  with check (private.is_admin(group_id) or (private.is_member(group_id) and lower(coalesce(email, '')) = private.my_email()));
+create policy "admins delete people" on public.parties for delete to authenticated
+  using (private.is_admin(group_id));
 
 do $$
 declare t text;
 begin
-  foreach t in array array['parties', 'trips', 'entries', 'categories'] loop
+  foreach t in array array['trips', 'entries', 'categories'] loop
     execute format('drop policy if exists "group members only" on public.%I', t);
     execute format('create policy "group members only" on public.%I for all to authenticated using (private.is_member(group_id)) with check (private.is_member(group_id))', t);
   end loop;
@@ -243,3 +293,4 @@ drop function if exists public.is_member_path(text);
 drop function if exists public.is_owner(uuid);
 drop function if exists public.is_member(uuid);
 drop function if exists public.my_email();
+drop function if exists private.is_owner(uuid);

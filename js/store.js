@@ -136,8 +136,10 @@ async function cloudStore(config) {
     async listGroups() { return must(await sb.from('groups').select('id, name, created_at').order('created_at')); },
     async createGroup(name) { return must(await sb.rpc('create_group', { group_name: name })); },
     async members() { return must(await sb.from('group_members').select('email, role, added_at').eq('group_id', groupId).order('added_at')); },
-    async addMember(email) { must(await sb.from('group_members').insert({ group_id: groupId, email: email.trim().toLowerCase(), role: 'member' })); },
-    async removeMember(email) { must(await sb.from('group_members').delete().eq('group_id', groupId).eq('email', email)); },
+    async addMember(email, role = 'user') { must(await sb.from('group_members').insert({ group_id: groupId, email: email.trim().toLowerCase(), role })); },
+    // Updates and deletes the database refuses affect no rows rather than erroring, so check.
+    async setRole(email, role) { if (!must(await sb.from('group_members').update({ role }).eq('group_id', groupId).eq('email', email).select('email')).length) throw new Error('not_allowed'); },
+    async removeMember(email) { if (!must(await sb.from('group_members').delete().eq('group_id', groupId).eq('email', email).select('email')).length) throw new Error('not_allowed'); },
 
     async load() {
       const [trips, parties, entries, categories] = await Promise.all([
@@ -151,7 +153,7 @@ async function cloudStore(config) {
     async saveTrip(t) { must(await sb.from('trips').upsert(tripRow(t))); },
     async deleteTrip(id) { must(await sb.from('trips').delete().eq('id', id)); },
     async saveParty(p) { must(await sb.from('parties').upsert(partyRow(p))); },
-    async deleteParty(id) { must(await sb.from('parties').delete().eq('id', id)); },
+    async deleteParty(id) { if (!must(await sb.from('parties').delete().eq('id', id).select('id')).length) throw new Error('not_allowed'); },
     async saveEntry(e) { must(await sb.from('entries').upsert(entryRow(e))); },
     async deleteEntry(id) { must(await sb.from('entries').delete().eq('id', id)); },
     async saveCategory(c) { must(await sb.from('categories').upsert({ id: c.id, group_id: groupId, name: c.name, sort: c.sort })); },

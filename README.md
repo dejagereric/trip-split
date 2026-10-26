@@ -87,6 +87,23 @@ The app checks for changes every 15 seconds while open, and whenever it comes ba
 
 **Cost:** Supabase's free tier is plenty. Each receipt scan is one small call to a Haiku-class model, a fraction of a cent.
 
+## Roles: Administrators and Users
+
+Every member of a group is an **Administrator** or a **User**. The database enforces this with row-level security on every request. The app doesn't hide anything; it shows "Only Administrators can do that" when the database refuses.
+
+| | Administrators | Users |
+|---|---|---|
+| Trips, expenses, settle-up, categories | Full access | Full access |
+| **People**: see names | Yes | Yes (the ledger needs them) |
+| **People**: add / edit / delete others | Yes | No |
+| **People**: own record (Your details) | Yes | Yes, only the one with their sign-in email |
+| **Access**: see who can sign in | Everyone | Only their own entry |
+| **Access**: give / remove access, change roles | Yes | No |
+| Rename or delete the group | Yes | No |
+
+- Whoever creates a group is its first Administrator, and a group can never lose its last Administrator (the database refuses).
+- A User can't add a brand-new person from *Add expense*; they pick people already in the group.
+
 ## Privacy
 
 - **Only approved email addresses get in.** The database itself checks that the signed-in, code-verified email is on the group's list before returning or changing anything. The app link alone is useless.

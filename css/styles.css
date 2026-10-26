@@ -225,3 +225,6 @@ select { height: 48px; border: 1px solid var(--control); border-radius: 12px; ba
 .icon-btn svg { width: 20px; height: 20px; }
 .icon-btn:disabled { opacity: 0.35; cursor: not-allowed; }
 .danger-icon { color: var(--danger); }
+.access-row { flex-wrap: wrap; }
+.access-row .row-btns { flex-basis: 100%; }
+.access-row .row-btns .btn { flex: 1 1 auto; }

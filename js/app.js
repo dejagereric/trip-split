@@ -546,30 +546,37 @@ function inviteLink(email) {
 
 function accessHtml() {
   const me = (state.user?.email || '').toLowerCase();
-  const iOwn = state.members.some((m) => m.email === me && m.role === 'owner');
   const group = state.groups.find((g) => g.id === store.groupId);
+  const roleName = (r) => (r === 'admin' ? 'Administrator' : 'User');
+  // Permissions are enforced by the database; this screen shows every control and reports refusals.
   return `<div class="stack">
     <div class="card">
       <span class="lbl">Signed in as</span>
       <span class="strong">${esc(me)}</span>
-      <span class="small muted">Group: ${esc(group?.name || '')}</span>
+      <span class="small muted">Group: ${esc(group?.name || '')}${state.members.find((m) => m.email === me) ? ' · ' + roleName(state.members.find((m) => m.email === me).role) : ''}</span>
       <button type="button" class="btn" data-action="signOut">Sign out</button>
     </div>
     ${state.groups.length > 1 ? `<div class="field"><span class="lbl">Your groups</span><div class="wrap">${state.groups.map((g) => chip(esc(g.name), 'switchGroup', { id: g.id }, g.id === store.groupId)).join('')}</div></div>` : ''}
     <h2>Who can sign in</h2>
-    <p class="small muted note">Only these email addresses can open this group’s trips. Each person signs in with a code sent to their address.</p>
+    <p class="small muted note">Only these email addresses can open this group’s trips. Administrators manage people and access; Users add and edit trips and expenses.</p>
     <div class="card tight">
       ${state.members.map((m) => {
         const mine = m.email === me;
-        const canRemove = m.role !== 'owner' && (iOwn || mine);
-        return `<div class="list-row"><span class="grow"><span class="strong ellipsis">${esc(m.email)}</span><span class="small muted">${m.role === 'owner' ? 'Owner' : 'Member'}${mine ? ' · you' : ''}</span></span>
-          ${!mine ? `<a class="btn small-btn" href="${inviteLink(m.email)}">Invite</a>` : ''}
-          ${canRemove ? `<button type="button" class="btn small-btn" data-action="removeMember" data-email="${esc(m.email)}">${mine ? 'Leave' : 'Remove'}</button>` : ''}</div>`;
+        const toRole = m.role === 'admin' ? 'user' : 'admin';
+        return `<div class="list-row access-row"><span class="grow"><span class="strong ellipsis">${esc(m.email)}</span><span class="small muted">${roleName(m.role)}${mine ? ' · you' : ''}</span></span>
+          <div class="row-btns">
+            ${!mine ? `<a class="btn small-btn" href="${inviteLink(m.email)}">Invite</a>` : ''}
+            <button type="button" class="btn small-btn" data-action="setRole" data-email="${esc(m.email)}" data-role="${toRole}">Make ${roleName(toRole)}</button>
+            <button type="button" class="btn small-btn" data-action="removeAccess" data-email="${esc(m.email)}">${mine ? 'Leave' : 'Remove'}</button>
+          </div></div>`;
       }).join('')}
     </div>
     <div class="newperson">
       <input data-nm="1" type="email" inputmode="email" autocomplete="off" autocapitalize="off" placeholder="Add an email address" aria-label="Email address to add" value="${esc(state.newMember)}">
-      <button type="button" class="btn primary" data-action="addMember">Give access</button>
+      <div class="grid2">
+        <button type="button" class="btn primary" data-action="addMember" data-role="user">Add as User</button>
+        <button type="button" class="btn" data-action="addMember" data-role="admin">Add as Administrator</button>
+      </div>
     </div>
     <p class="small muted note">After adding someone, tap Invite to email them the link.</p>
   </div>`;
@@ -1028,6 +1035,16 @@ function startPolling() {
   document.addEventListener('visibilitychange', () => { if (state.auth === 'ready' && document.visibilityState === 'visible') refresh(); });
 }
 
+// Words for a failed save. The database refuses what your role doesn't allow.
+function errorText(err) {
+  const m = String(err?.message || '');
+  if (err?.code === '42501' || err?.message === 'not_allowed' || /row-level security|permission denied/i.test(m)) return 'Only Administrators can do that.';
+  if (/at least one Administrator/i.test(m)) return 'A group needs at least one Administrator.';
+  if (m === 'storage_full') return 'Phone storage is full — remove a receipt photo or two.';
+  if (/duplicate key/i.test(m)) return 'That already exists.';
+  return 'Couldn’t save. Check your connection and try again.';
+}
+
 // Apply a change locally right away, then save; undo and explain if saving fails.
 async function commit(apply, save, undo, okMsg) {
   apply();
@@ -1035,7 +1052,7 @@ async function commit(apply, save, undo, okMsg) {
   try { await save(); }
   catch (err) {
     undo();
-    flash(err && err.message === 'storage_full' ? 'Phone storage is full — remove a receipt photo or two.' : 'Couldn’t save. Check your connection and try again.');
+    flash(errorText(err));
   }
 }
 const replaceIn = (key, item) => {
@@ -1086,7 +1103,7 @@ async function createParty(fields) {
   const p = { id: uuid(), name: name.slice(0, 60), phone: String(fields.phone || '').trim(), email: String(fields.email || '').trim(), color: state.data.parties.length % PALETTE.length, createdAt: new Date().toISOString() };
   replaceIn('parties', p);
   try { await store.saveParty(p); }
-  catch { removeFrom('parties', p.id); flash('Couldn’t save that person. Try again.'); return null; }
+  catch (err) { removeFrom('parties', p.id); flash(errorText(err)); return null; }
   return p.id;
 }
 
@@ -1240,7 +1257,7 @@ const actions = {
       removeFrom('parties', p.id);
       touched.forEach((t) => replaceIn('trips', t));
       state.screen = 'people';
-    }, async () => { for (const t of touched) await store.saveTrip(t); await store.deleteParty(p.id); }, () => { state.data = before; }, `${p.name} deleted`);
+    }, async () => { await store.deleteParty(p.id); for (const t of touched) await store.saveTrip(t); }, () => { state.data = before; }, `${p.name} deleted`);
   },
 
   // add / edit expense
@@ -1542,23 +1559,31 @@ const actions = {
     render();
   },
   async switchGroup(d) { pref.set('activeGroup', d.id); state.screen = 'trips'; await enterGroup(); },
-  async addMember() {
+  async addMember(d = {}) {
     const email = state.newMember.trim().toLowerCase();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { flash('Enter a valid email address.'); return; }
     if (isMember(email)) { flash('They already have access.'); return; }
-    await actions.grantAccess({ email });
+    await actions.grantAccess({ email, role: d.role });
     state.newMember = '';
     render();
   },
   async grantAccess(d) {
     const email = d.email.trim().toLowerCase();
     try {
-      await store.addMember(email);
-      state.members = state.members.concat([{ email, role: 'member', added_at: new Date().toISOString() }]);
+      const role = d.role === 'admin' ? 'admin' : 'user';
+      await store.addMember(email, role);
+      state.members = state.members.concat([{ email, role, added_at: new Date().toISOString() }]);
       flash(`${email} can now sign in. Tap Invite to send them the link.`);
-    } catch (err) { flash('Couldn’t add them. ' + (err?.message || '')); }
+    } catch (err) { flash(errorText(err)); }
   },
-  async removeMember(d) {
+  async setRole(d) {
+    try {
+      await store.setRole(d.email, d.role);
+      state.members = state.members.map((m) => (m.email === d.email ? { ...m, role: d.role } : m));
+      flash(`${d.email} is now ${d.role === 'admin' ? 'an Administrator' : 'a User'}`);
+    } catch (err) { flash(errorText(err)); }
+  },
+  async removeAccess(d) {
     const me = (state.user?.email || '').toLowerCase();
     const leaving = d.email === me;
     if (!window.confirm(leaving ? 'Leave this group? You’ll lose access to its trips.' : `Remove ${d.email}? They won’t be able to see these trips any more.`)) return;
@@ -1567,7 +1592,7 @@ const actions = {
       if (leaving) { pref.set('activeGroup', ''); await enterGroup(); return; }
       state.members = state.members.filter((m) => m.email !== d.email);
       flash(`${d.email} removed`);
-    } catch (err) { flash('Couldn’t remove them. ' + (err?.message || '')); }
+    } catch (err) { flash(errorText(err)); }
   },
 };
 
