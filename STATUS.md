@@ -20,6 +20,7 @@ _Last updated: October 26, 2026_
 - **Categories:** `categories` table, shared per group, managed under Trips → Categories. Yacht charter and Boat expenses added. The receipt reader uses the group's list.
 - **Roles (RBAC):** `group_members.role` is `admin` (Administrators) or `user` (Users). Eric is an Administrator. Row-level security: People (`parties`) writes are admin-only except a User's own record; Access (`group_members`) is admin-only (Users see only their own row); group rename/delete admin-only; a trigger keeps at least one admin. Tested in the live database with simulated Administrator, User and outsider (rolled back). No UI gating by design; refusals show "Only Administrators can do that."
 - **Groups (Oct 26):** Access → Groups: create / open / rename / delete. Group creation is locked in the database (`private.settings.open_group_creation = false`; only existing Administrators may create). Uninvited sign-ins aren't offered a group. The current group is named "This is a test"; Eric plans to create a real group when testing is done, then delete or rename the test one.
+- **Invitations (Oct 26):** `invitations` table (admin-only RLS), `invite_preview` (pre-sign-in), `accept_invite` (joins with role, links the person's card), and the `hook_invite_only_signup` auth hook function. Sent from a person card or Access by email, text or share; links work once and expire in 30 days. Tested in the live database (rolled back) and end to end in the app with a stand-in backend.
 - **Layout:** the app is pinned to the visible screen (fixed position), which fixes the tab bar dropping below the screen on Android.
 
 ## Next: custom domain `trips.ericdejager.com`
@@ -46,6 +47,8 @@ Do these in order (the DNS record must exist before GitHub switches addresses):
 5. [ ] If anything fails, Claude checks the auth, database and function logs through the Supabase connector.
 
 ## Waiting on Eric
+
+- [ ] **Turn on invite-only sign-up:** Supabase → Authentication → Hooks → Before User Created → Postgres → `public.hook_invite_only_signup` → Enable. Until then, strangers can still request a code (they see nothing, but an account gets created).
 
 - [ ] Google Cloud OAuth client ID for Sheets export (README → Google Sheets export setup), then Claude puts it in `js/config.js`.
 - [ ] Confirm the bottom tab bar now stays put on the Pixel (Balances and Ledger).

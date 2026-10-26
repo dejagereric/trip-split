@@ -303,6 +303,100 @@ end $$;
 -- Nothing is readable without signing in.
 revoke all on public.groups, public.group_members, public.parties, public.trips, public.entries, public.categories from anon;
 
+-- ---------- invitations ----------
+-- An Administrator sends a personal link (by email or text). Whoever signs in through it joins
+-- the group with the role it carries, and is linked to the person's card.
+create table if not exists public.invitations (
+  token             uuid primary key default gen_random_uuid(),
+  group_id          uuid not null references public.groups(id) on delete cascade,
+  party_id          uuid references public.parties(id) on delete set null,
+  email             text,                              -- where it was sent, if by email (also pre-fills sign-in)
+  role              text not null default 'user' check (role in ('admin', 'user')),
+  created_by_email  text not null default lower(coalesce(auth.jwt() ->> 'email', '')),
+  created_at        timestamptz not null default now(),
+  expires_at        timestamptz not null default now() + interval '30 days',
+  accepted_at       timestamptz,
+  accepted_email    text
+);
+create index if not exists invitations_group_idx on public.invitations (group_id, created_at);
+alter table public.invitations enable row level security;
+drop policy if exists "admins manage invitations" on public.invitations;
+create policy "admins manage invitations" on public.invitations for all to authenticated
+  using (private.is_admin(group_id)) with check (private.is_admin(group_id));
+revoke all on public.invitations from anon;
+
+-- Before signing in: what the link is for (group, who sent it, who it's for). Nothing else.
+create or replace function public.invite_preview(invite uuid) returns json
+language sql stable security definer set search_path = '' as $$
+  select json_build_object(
+    'group', g.name,
+    'from', coalesce((select p.name from public.parties p where p.group_id = i.group_id and lower(coalesce(p.email, '')) = i.created_by_email limit 1), split_part(i.created_by_email, '@', 1)),
+    'to', (select p.name from public.parties p where p.id = i.party_id),
+    'email', i.email,
+    'role', i.role,
+    'valid', i.accepted_at is null and i.expires_at > now()
+  )
+  from public.invitations i join public.groups g on g.id = i.group_id
+  where i.token = invite
+$$;
+revoke all on function public.invite_preview(uuid) from public;
+grant execute on function public.invite_preview(uuid) to anon, authenticated;
+
+-- After signing in: join the group, link the person's card to this account, use up the link.
+create or replace function public.accept_invite(invite uuid) returns uuid
+language plpgsql security definer set search_path = '' as $$
+declare
+  i public.invitations;
+  me text := private.my_email();
+begin
+  if auth.uid() is null or me = '' then raise exception 'Sign in first'; end if;
+  select * into i from public.invitations where token = invite for update;
+  if not found then raise exception 'This invitation link isn’t valid.'; end if;
+  if i.accepted_at is not null then
+    if i.accepted_email = me then return i.group_id; end if;  -- opened twice by the same person
+    raise exception 'This invitation has already been used.';
+  end if;
+  if i.expires_at <= now() then raise exception 'This invitation has expired. Ask for a new one.'; end if;
+  insert into public.group_members (group_id, email, role) values (i.group_id, me, i.role)
+  on conflict (group_id, email) do update
+    set role = case when excluded.role = 'admin' then 'admin' else public.group_members.role end;
+  if i.party_id is not null then
+    update public.parties set email = me where id = i.party_id and group_id = i.group_id;
+  end if;
+  update public.invitations set accepted_at = now(), accepted_email = me where token = invite;
+  return i.group_id;
+end $$;
+revoke all on function public.accept_invite(uuid) from public, anon;
+grant execute on function public.accept_invite(uuid) to authenticated;
+
+-- Auth hook "Before User Created": new accounts only for invited people.
+-- Allowed when the email already has access to a group, or an unused invitation was sent to
+-- that email, or the sign-up came through a valid invitation link (its token in user_metadata.invite).
+-- Enable: Dashboard > Authentication > Hooks > Before User Created > Postgres > public.hook_invite_only_signup
+create or replace function public.hook_invite_only_signup(event jsonb) returns jsonb
+language plpgsql stable security definer set search_path = '' as $$
+declare
+  em text := lower(coalesce(event->'user'->>'email', ''));
+  tok text := coalesce(event->'user'->'user_metadata'->>'invite', '');
+begin
+  if em <> '' and exists (select 1 from public.group_members m where m.email = em) then
+    return '{}'::jsonb;
+  end if;
+  if em <> '' and exists (select 1 from public.invitations i
+                          where lower(i.email) = em and i.accepted_at is null and i.expires_at > now()) then
+    return '{}'::jsonb;
+  end if;
+  if tok ~ '^[0-9a-f-]{36}$' and exists (select 1 from public.invitations i
+                          where i.token = tok::uuid and i.accepted_at is null and i.expires_at > now()) then
+    return '{}'::jsonb;
+  end if;
+  return jsonb_build_object('error', jsonb_build_object(
+    'http_code', 403,
+    'message', 'Trip Split is invitation-only. Open the link in your invitation to sign in.'));
+end $$;
+grant execute on function public.hook_invite_only_signup(jsonb) to supabase_auth_admin;
+revoke execute on function public.hook_invite_only_signup(jsonb) from authenticated, anon, public;
+
 -- ---------- receipt photos (private) ----------
 insert into storage.buckets (id, name, public)
 values ('receipts', 'receipts', false)

@@ -228,3 +228,8 @@ select { height: 48px; border: 1px solid var(--control); border-radius: 12px; ba
 .access-row { flex-wrap: wrap; }
 .access-row .row-btns { flex-basis: 100%; }
 .access-row .row-btns .btn { flex: 1 1 auto; }
+
+/* invitations */
+.invite-card { border-color: var(--ink); }
+.invite-box { display: flex; flex-direction: column; gap: 12px; }
+.invite-box .row-btns .btn { flex: 1 1 140px; }

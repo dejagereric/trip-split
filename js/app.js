@@ -115,6 +115,9 @@ const state = {
   groups: [],
   members: [],
   newMember: '',
+  invite: null,       // { token, group, from, to, email, role, valid } from an invitation link
+  invites: [],        // pending invitations in this group (Administrators)
+  inviteRole: 'user',
   search: '',
   searchOpen: false,
   exportOpen: false,
@@ -234,13 +237,19 @@ function authHtml() {
   const msg = state.authMsg ? `<p class="auth-msg" role="alert">${esc(state.authMsg)}</p>` : '';
   if (!store || state.auth === 'checking') return '<main id="main" class="setup"><h1>Trip Split</h1><p class="muted">Loading…</p></main>';
   if (state.auth === 'signedOut') {
+    const inv = state.invite;
     return `<main id="main" class="setup">
       <h1>Trip Split</h1>
-      <p>Sign in with your email address. We’ll send you a 6-digit code — no password needed.</p>
-      <label class="field"><span class="lbl">Email</span><input data-auth="authEmail" type="email" inputmode="email" autocomplete="email" autocapitalize="off" placeholder="you@example.com" value="${esc(state.authEmail)}"></label>
+      ${inv && inv.valid ? `<div class="card invite-card">
+          <span class="strong big">${esc(inv.from || 'Someone')} invited ${inv.to ? esc(inv.to) : 'you'} to join “${esc(inv.group)}”</span>
+          <span class="muted">Trip Split keeps track of shared trip costs. Sign in with your email and a 6-digit code to accept${inv.role === 'admin' ? ' as an Administrator' : ''}.</span>
+        </div>`
+        : inv ? `<div class="card"><span class="strong">This invitation link has expired or was already used.</span><span class="muted">Ask ${esc(inv.from || 'the person who invited you')} to send a new one.</span></div>`
+        : '<p>Trip Split is invitation-only. Sign in with the email address your invitation was sent to, or open the link in your invitation.</p>'}
+      <label class="field"><span class="lbl">Your email</span><input data-auth="authEmail" type="email" inputmode="email" autocomplete="email" autocapitalize="off" placeholder="you@example.com" value="${esc(state.authEmail)}"></label>
       <button type="button" class="btn primary big" data-action="sendCode" ${busy}>${state.authBusy ? 'Sending…' : 'Send code'}</button>
       ${msg}
-      <p class="small muted">Only people added to a group can see its trips.</p>
+      <p class="small muted">We’ll email you a 6-digit code — no password needed.</p>
     </main>`;
   }
   if (state.auth === 'codeSent') {
@@ -257,10 +266,10 @@ function authHtml() {
   const me = state.user?.email || '';
   return `<main id="main" class="setup">
     <h1>Welcome</h1>
-    <p>You’re signed in as <strong>${esc(me)}</strong>, but you’re not in a group yet.</p>
+    <p>You’re signed in as <strong>${esc(me)}</strong>, but you don’t have access to any trips yet.</p>
     <div class="card">
-      <span class="strong">Waiting for an invitation?</span>
-      <span class="muted">Ask whoever invited you to add <strong>${esc(me)}</strong> under Trips → Access, then tap Check again.</span>
+      <span class="strong">Trip Split is invitation-only</span>
+      <span class="muted">Open the link in your invitation email or text to join. If you were invited at a different address, sign out and sign in with that one.</span>
       <button type="button" class="btn" data-action="checkGroups" ${busy}>Check again</button>
     </div>
     ${state.canCreate ? `<div class="card">
@@ -430,7 +439,7 @@ function peopleHtml() {
       const contact = [p.phone, p.email].filter(Boolean).join(' · ');
       return `<button type="button" class="list-row as-button" data-action="editPerson" data-id="${esc(p.id)}">${av(p.id, 'md')}
         <span class="grow"><span class="strong">${esc(p.name)}${youTag(p.id)}</span><span class="small muted ellipsis">${esc(contact || 'No contact details')}</span></span>
-        <span class="small muted">${plural(tripsIn, 'trip', 'trips')}</span></button>`;
+        <span class="small muted right">${plural(tripsIn, 'trip', 'trips')}${store?.mode === 'cloud' && p.id !== myPartyId() ? (p.email && isMember(p.email) ? '<br>Has access' : invitesFor(p.id).length ? '<br>Invited' : '') : ''}</span></button>`;
     }).join('')}</div>` : '<div class="card center"><p class="strong big">No people yet</p><p class="muted">People are added when you put them on an expense, or here.</p></div>'}
   </div>`;
 }
@@ -450,9 +459,9 @@ function personEditHtml() {
     <div class="field"><span class="lbl">Color</span>
       <div class="wrap">${PALETTE.map((c, i) => `<button type="button" class="swatch${f.color === i ? ' on' : ''}" data-action="personColor" data-i="${i}" style="background:${c}" aria-label="Color ${i + 1}" aria-pressed="${f.color === i}"></button>`).join('')}</div>
     </div>
-    ${p && p.email && store?.mode === 'cloud' ? (isMember(p.email)
-      ? `<p class="small muted note">${esc(p.email)} can sign in and see your trips.</p>`
-      : `<button type="button" class="btn" data-action="grantAccess" data-email="${esc(p.email)}">Let ${esc(p.name)} sign in</button>`) : ''}
+    ${p && store?.mode === 'cloud' && p.id !== myPartyId() ? `<h2>Trip Split invitation</h2>
+      ${p.email && isMember(p.email) ? `<p class="small muted note">${esc(p.name)} has access and signs in as ${esc(p.email)}.</p>` : ''}
+      ${inviteControls({ pid: p.id, email: p.email, phone: p.phone, name: p.name })}` : ''}
     <button type="button" class="btn primary big" data-action="savePerson">${p ? 'Save' : 'Add person'}</button>
     ${p ? `<button type="button" class="btn danger" data-action="deletePerson" data-id="${esc(p.id)}" ${n ? 'disabled' : ''}>Delete person</button>
       ${n ? `<p class="small muted note">${esc(p.name)} is on ${plural(n, 'entry', 'entries')}, so they can’t be deleted. Edit or delete those entries first.</p>` : ''}` : ''}
@@ -536,12 +545,38 @@ function categoriesHtml() {
 }
 
 // ----- access (cloud) -----
+const partyByEmail = (email) => state.data.parties.find((p) => (p.email || '').trim().toLowerCase() === String(email || '').toLowerCase());
 const isMember = (email) => state.members.some((m) => m.email === String(email || '').trim().toLowerCase());
 const appUrl = () => location.origin + location.pathname;
 
-function inviteLink(email) {
-  const body = `I’ve added you to our trips in Trip Split.\n\nOpen ${appUrl()} and sign in with this email address (${email}). You’ll get a 6-digit code — no password.\n\nOn your phone, add it to your home screen: Safari → Share → Add to Home Screen, or Chrome → ⋮ → Install app.`;
-  return `mailto:${esc(email)}?subject=${encodeURIComponent('Join our trips on Trip Split')}&body=${encodeURIComponent(body)}`;
+// ----- invitations -----
+const inviteUrl = (token) => appUrl() + '?invite=' + token;
+function inviteText(name, token, short) {
+  const group = state.groups.find((g) => g.id === store.groupId)?.name || 'our trips';
+  const me = partyById(myPartyId())?.name?.split(' ')[0] || 'I';
+  const hi = name ? `Hi ${name.split(' ')[0]}, ` : 'Hi, ';
+  if (short) return `${hi}${me} invited you to “${group}” on Trip Split, where we track shared trip costs. Tap to join: ${inviteUrl(token)}`;
+  return `${hi}\n\n${me === 'I' ? 'I’ve' : me + ' has'} invited you to “${group}” on Trip Split, where we keep track of shared trip costs.\n\nTap this link to join:\n${inviteUrl(token)}\n\nYou’ll sign in with your email and a 6-digit code — no password. Then add it to your home screen (Safari → Share → Add to Home Screen, or Chrome → ⋮ → Install app).\n\nThe link works once and expires in 30 days.`;
+}
+const fmtShort = (iso) => fmtDay(String(iso || '').slice(0, 10));
+const invitesFor = (pid) => state.invites.filter((i) => i.party_id === pid);
+// Invitation controls for a person (card) or an email address (Access row).
+function inviteControls({ pid, email, phone, name }) {
+  const pending = pid ? invitesFor(pid) : state.invites.filter((i) => i.email === email);
+  return `<div class="invite-box">
+    ${pending.length ? pending.map((i) => `<div class="kv small"><span>Invited ${esc(fmtShort(i.created_at))} as ${i.role === 'admin' ? 'Administrator' : 'User'} · expires ${esc(fmtShort(i.expires_at))}</span>
+      <button type="button" class="link small" data-action="cancelInvite" data-token="${esc(i.token)}">Cancel</button></div>`).join('') : ''}
+    <div class="field"><span class="lbl">Invite as</span>
+      <div class="seg"><button type="button" class="${state.inviteRole === 'user' ? 'on' : ''}" data-action="inviteRole" data-role="user" aria-pressed="${state.inviteRole === 'user'}">User</button>
+      <button type="button" class="${state.inviteRole === 'admin' ? 'on' : ''}" data-action="inviteRole" data-role="admin" aria-pressed="${state.inviteRole === 'admin'}">Administrator</button></div>
+    </div>
+    <div class="row-btns">
+      ${email ? `<button type="button" class="btn" data-action="sendInvite" data-via="email" data-pid="${esc(pid || '')}" data-email="${esc(email)}" data-name="${esc(name || '')}">Email invitation</button>` : ''}
+      ${phone ? `<button type="button" class="btn" data-action="sendInvite" data-via="sms" data-pid="${esc(pid || '')}" data-phone="${esc(phone)}" data-name="${esc(name || '')}">Text invitation</button>` : ''}
+      <button type="button" class="btn" data-action="sendInvite" data-via="share" data-pid="${esc(pid || '')}" data-email="${esc(email || '')}" data-name="${esc(name || '')}">${navigator.share ? 'Share link…' : 'Copy link'}</button>
+    </div>
+    ${!email && !phone ? '<span class="small muted">Add an email or phone above to send the invitation directly.</span>' : ''}
+  </div>`;
 }
 
 function accessHtml() {
@@ -590,7 +625,7 @@ function accessHtml() {
         const toRole = m.role === 'admin' ? 'user' : 'admin';
         return `<div class="list-row access-row"><span class="grow"><span class="strong ellipsis">${esc(m.email)}</span><span class="small muted">${roleName(m.role)}${mine ? ' · you' : ''}</span></span>
           <div class="row-btns">
-            ${!mine ? `<a class="btn small-btn" href="${inviteLink(m.email)}">Invite</a>` : ''}
+            ${!mine ? `<button type="button" class="btn small-btn" data-action="sendInvite" data-via="email" data-email="${esc(m.email)}" data-role="${m.role}" data-pid="${esc(partyByEmail(m.email)?.id || '')}" data-name="${esc(partyByEmail(m.email)?.name || '')}">Email invite</button>` : ''}
             <button type="button" class="btn small-btn" data-action="setRole" data-email="${esc(m.email)}" data-role="${toRole}">Make ${roleName(toRole)}</button>
             <button type="button" class="btn small-btn" data-action="removeAccess" data-email="${esc(m.email)}">${mine ? 'Leave' : 'Remove'}</button>
           </div></div>`;
@@ -603,7 +638,11 @@ function accessHtml() {
         <button type="button" class="btn" data-action="addMember" data-role="admin">Add as Administrator</button>
       </div>
     </div>
-    <p class="small muted note">After adding someone, tap Invite to email them the link.</p>
+    <p class="small muted note">Adding an address lets that person sign in. Tap Email invite to send them the link. You can also invite anyone from their card in People, by email or text.</p>
+    ${state.invites.length ? `<h2>Pending invitations</h2>
+      <div class="card tight">${state.invites.map((i) => `<div class="list-row"><span class="grow"><span class="strong">${esc(partyById(i.party_id)?.name || i.email || 'Invitation link')}</span>
+        <span class="small muted">${i.role === 'admin' ? 'Administrator' : 'User'} · sent ${esc(fmtShort(i.created_at))} · expires ${esc(fmtShort(i.expires_at))}</span></span>
+        <button type="button" class="btn small-btn" data-action="cancelInvite" data-token="${esc(i.token)}">Cancel</button></div>`).join('')}</div>` : ''}
   </div>`;
 }
 
@@ -996,9 +1035,10 @@ function softRender() {
 async function refresh() {
   try {
     if (store.mode === 'cloud') {
-      const [data, members] = await Promise.all([store.load(), store.members()]);
+      const [data, members, invites] = await Promise.all([store.load(), store.members(), store.listInvites()]);
       state.data = data;
       state.members = members;
+      state.invites = invites;
       const me = (state.user?.email || '').toLowerCase();
       if (!members.some((m) => m.email === me)) { await enterGroup(); return; } // removed from this group
     } else {
@@ -1021,6 +1061,22 @@ async function refresh() {
   }
   state.loading = false;
   softRender();
+}
+
+// An invitation link opened on this device: join its group once signed in.
+async function acceptPendingInvite() {
+  const token = pref.get('pendingInvite');
+  if (!token || !store?.acceptInvite) return;
+  try {
+    const gid = await store.acceptInvite(token);
+    if (gid) pref.set('activeGroup', gid);
+    pref.set('pendingInvite', '');
+    state.invite = null;
+    state.welcomeMsg = 'You’ve joined. Welcome!';
+  } catch (err) {
+    pref.set('pendingInvite', '');
+    state.authMsg = err?.message || 'That invitation couldn’t be used.';
+  }
 }
 
 // After sign-in: open the last-used group, or ask to create/join one.
@@ -1548,10 +1604,12 @@ const actions = {
     state.authEmail = email;
     state.authBusy = true; state.authMsg = ''; render();
     try {
-      await store.auth.sendCode(email);
+      await store.auth.sendCode(email, state.invite && state.invite.valid ? state.invite.token : null);
       state.auth = 'codeSent'; state.authCode = ''; state.authMsg = '';
     } catch (err) {
-      state.authMsg = /rate|limit|seconds/i.test(err?.message || '') ? 'Too many codes requested. Wait a minute and try again.' : 'Couldn’t send the code. ' + (err?.message || '');
+      const m = err?.message || '';
+      state.authMsg = /invitation-only|not allowed|signups? not allowed/i.test(m) ? 'Trip Split is invitation-only, and this email hasn’t been invited. Use the address your invitation was sent to, or open the link in your invitation.'
+        : /rate|limit|seconds/i.test(m) ? 'Too many codes requested. Wait a minute and try again.' : 'Couldn’t send the code. ' + m;
     }
     state.authBusy = false; render();
   },
@@ -1562,7 +1620,9 @@ const actions = {
     try {
       state.user = await store.auth.verifyCode(state.authEmail, code);
       state.authBusy = false;
+      await acceptPendingInvite();
       await enterGroup();
+      if (state.welcomeMsg) { flash(state.welcomeMsg); state.welcomeMsg = ''; }
     } catch (err) {
       state.authBusy = false;
       state.authMsg = /expired|invalid/i.test(err?.message || '') ? 'That code is wrong or expired. Check it, or send a new one.' : 'Couldn’t sign in. ' + (err?.message || '');
@@ -1641,6 +1701,33 @@ const actions = {
       await store.addMember(email, role);
       state.members = state.members.concat([{ email, role, added_at: new Date().toISOString() }]);
       flash(`${email} can now sign in. Tap Invite to send them the link.`);
+    } catch (err) { flash(errorText(err)); }
+  },
+  inviteRole(d) { state.inviteRole = d.role === 'admin' ? 'admin' : 'user'; render(); },
+  async sendInvite(d) {
+    const role = d.role || state.inviteRole;
+    try {
+      const inv = await store.createInvite({ partyId: d.pid || null, email: d.via === 'email' ? d.email : (d.email || null), role });
+      state.invites = [{ token: inv.token, party_id: d.pid || null, email: d.email || null, role, created_at: new Date().toISOString(), expires_at: inv.expires_at }, ...state.invites];
+      const name = d.name || '';
+      if (d.via === 'email') {
+        location.href = `mailto:${encodeURIComponent(d.email)}?subject=${encodeURIComponent('Join our trips on Trip Split')}&body=${encodeURIComponent(inviteText(name, inv.token, false))}`;
+      } else if (d.via === 'sms') {
+        location.href = `sms:${d.phone.replace(/[^\d+]/g, '')}?&body=${encodeURIComponent(inviteText(name, inv.token, true))}`;
+      } else if (navigator.share) {
+        try { await navigator.share({ title: 'Trip Split invitation', text: inviteText(name, inv.token, true) }); } catch {}
+      } else {
+        try { await navigator.clipboard.writeText(inviteUrl(inv.token)); flash('Invitation link copied'); return; } catch { window.prompt('Copy this invitation link:', inviteUrl(inv.token)); }
+      }
+      flash('Invitation created. It works once and expires in 30 days.');
+    } catch (err) { flash(errorText(err)); }
+  },
+  async cancelInvite(d) {
+    if (!window.confirm('Cancel this invitation? The link will stop working.')) return;
+    try {
+      await store.cancelInvite(d.token);
+      state.invites = state.invites.filter((i) => i.token !== d.token);
+      flash('Invitation cancelled');
     } catch (err) { flash(errorText(err)); }
   },
   async setRole(d) {
@@ -1828,9 +1915,28 @@ async function boot() {
     return;
   }
   if (store.mode === 'cloud') {
+    const q = new URLSearchParams(location.search);
+    const token = q.get('invite');
+    if (token && /^[0-9a-f-]{36}$/i.test(token)) {
+      pref.set('pendingInvite', token);
+      history.replaceState(null, '', location.pathname + location.hash); // keep the address clean
+    }
+    const pending = pref.get('pendingInvite');
     state.user = await store.auth.user().catch(() => null);
+    if (pending && !state.user) {
+      try {
+        const pv = await store.invitePreview(pending);
+        if (pv) {
+          state.invite = { token: pending, ...pv };
+          if (pv.email && !state.authEmail) state.authEmail = pv.email;
+          if (!pv.valid) pref.set('pendingInvite', '');
+        } else pref.set('pendingInvite', '');
+      } catch {}
+    }
     if (!state.user) { state.auth = 'signedOut'; render(); return; }
+    await acceptPendingInvite();
     await enterGroup();
+    if (state.welcomeMsg) { flash(state.welcomeMsg); state.welcomeMsg = ''; }
     return;
   }
   state.auth = 'ready';

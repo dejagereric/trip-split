@@ -128,13 +128,31 @@ async function cloudStore(config) {
 
     auth: {
       async user() { const { data } = await sb.auth.getSession(); return data.session ? data.session.user : null; },
-      async sendCode(email) { const { error } = await sb.auth.signInWithOtp({ email, options: { shouldCreateUser: true } }); if (error) throw error; },
+      // An invitation token rides along so the invite-only sign-up check can let a texted invitee in.
+      async sendCode(email, invite) {
+        const options = { shouldCreateUser: true };
+        if (invite) options.data = { invite };
+        const { error } = await sb.auth.signInWithOtp({ email, options });
+        if (error) throw error;
+      },
       async verifyCode(email, token) { const { data, error } = await sb.auth.verifyOtp({ email, token, type: 'email' }); if (error) throw error; return data.user; },
       async signOut() { await sb.auth.signOut(); },
     },
 
     async listGroups() { return must(await sb.from('groups').select('id, name, created_at').order('created_at')); },
     async createGroup(name) { return must(await sb.rpc('create_group', { group_name: name })); },
+    // Invitations (Administrators). Preview works before signing in.
+    async invitePreview(token) { const { data, error } = await sb.rpc('invite_preview', { invite: token }); if (error) throw error; return data; },
+    async acceptInvite(token) { return must(await sb.rpc('accept_invite', { invite: token })); },
+    async createInvite({ partyId, email, role }) {
+      const row = must(await sb.from('invitations').insert({ group_id: groupId, party_id: partyId || null, email: email || null, role: role === 'admin' ? 'admin' : 'user' }).select('token, expires_at').single());
+      return row;
+    },
+    async listInvites() {
+      const { data, error } = await sb.from('invitations').select('token, party_id, email, role, created_at, expires_at').eq('group_id', groupId).is('accepted_at', null).order('created_at', { ascending: false });
+      return error ? [] : data || [];
+    },
+    async cancelInvite(token) { if (!must(await sb.from('invitations').delete().eq('token', token).select('token')).length) throw new Error('not_allowed'); },
     async canCreateGroup() { const { data, error } = await sb.rpc('can_create_group'); return !error && data === true; },
     async renameGroup(id, name) { if (!must(await sb.from('groups').update({ name }).eq('id', id).select('id')).length) throw new Error('not_allowed'); },
     // Deletes the group and, through the database, all its trips, people, expenses and access.

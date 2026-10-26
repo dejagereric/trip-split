@@ -104,6 +104,19 @@ Every member of a group is an **Administrator** or a **User**. The database enfo
 - Whoever creates a group is its first Administrator, and a group can never lose its last Administrator (the database refuses).
 - A User can't add a brand-new person from *Add expense*; they pick people already in the group.
 
+## Invitations (invitation-only sign-in)
+
+Trip Split is invitation-only: nobody can create an account unless an Administrator invited them.
+
+1. **Add the person** in People (name, plus email and/or phone), or add their email under Access.
+2. **Send the invitation** from their card (**People → person → Trip Split invitation**) or from **Access → Email invite**. Choose **User** or **Administrator**, then **Email invitation**, **Text invitation**, or **Share link / Copy link**. Your phone's email or Messages app opens with the message and a personal link.
+3. **They tap the link.** It shows who invited them and to which group, pre-fills their email if it was emailed, and they sign in with a 6-digit code.
+4. **They're in**, with the role on the invitation, and their card is linked to their account, so they show as "(you)" and are the default payer on expenses they add.
+
+Links work once and expire after 30 days. **Access → Pending invitations** lists outstanding ones, and you can cancel any of them. Only Administrators can create or see invitations (enforced in the database).
+
+**One-time setup (Supabase dashboard):** **Authentication → Hooks → Before User Created → Postgres → `public.hook_invite_only_signup` → Enable.** This check refuses to create an account unless the email already has access, an invitation was sent to it, or the sign-up came through a valid invitation link. Existing accounts are unaffected.
+
 ## Groups
 
 A **group** is one circle of people: its own trips, people, categories and access list. Groups never see each other, so use one per circle (e.g. "Family", "Sailing crew").
