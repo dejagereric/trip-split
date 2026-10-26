@@ -17,9 +17,13 @@ _Last updated: October 25, 2026_
 
 ## Next: custom domain `trips.ericdejager.com`
 
+**Eric's domains, including ericdejager.com, are managed at GoDaddy** (godaddy.com → My Products → Domains → ericdejager.com → DNS).
+
+Note (Oct 26): trips.ericdejager.com already answers with something before our record was added. That's probably a GoDaddy wildcard (`*`), forwarding or parked-page record. A specific `trips` record overrides it.
+
 Do these in order (the DNS record must exist before GitHub switches addresses):
 
-1. [ ] DNS at ericdejager.com's DNS host: `CNAME` record, name `trips`, target `dejagereric.github.io` (on Cloudflare, set it to "DNS only" / grey cloud).
+1. [ ] GoDaddy DNS: add record type `CNAME`, name `trips`, value `dejagereric.github.io`, TTL default.
 2. [ ] Wait for DNS to take effect (minutes, up to an hour).
 3. [ ] GitHub repo → Settings → Pages → Custom domain: `trips.ericdejager.com` → Save. GitHub adds a `CNAME` file to the repo.
 4. [ ] Tick **Enforce HTTPS** once the certificate is ready.
