@@ -41,35 +41,44 @@ create table if not exists public.group_members (
 );
 create index if not exists group_members_email_idx on public.group_members (email);
 
+-- Access-check helpers live in a "private" schema that the API doesn't expose;
+-- the access rules below still use them.
+create schema if not exists private;
+revoke all on schema private from public, anon;
+grant usage on schema private to authenticated;
+
 -- The signed-in user's verified email, lower-cased.
-create or replace function public.my_email() returns text
-language sql stable as $$
+create or replace function private.my_email() returns text
+language sql stable set search_path = '' as $$
   select lower(coalesce(auth.jwt() ->> 'email', ''))
 $$;
 
--- security definer so policies can check membership without recursing into RLS.
-create or replace function public.is_member(g uuid) returns boolean
-language sql stable security definer set search_path = public as $$
-  select exists (select 1 from public.group_members m where m.group_id = g and m.email = public.my_email())
+-- security definer so rules can check membership without recursing into row-level security.
+create or replace function private.is_member(g uuid) returns boolean
+language sql stable security definer set search_path = '' as $$
+  select exists (select 1 from public.group_members m where m.group_id = g and m.email = private.my_email())
 $$;
 
-create or replace function public.is_owner(g uuid) returns boolean
-language sql stable security definer set search_path = public as $$
-  select exists (select 1 from public.group_members m where m.group_id = g and m.email = public.my_email() and m.role = 'owner')
+create or replace function private.is_owner(g uuid) returns boolean
+language sql stable security definer set search_path = '' as $$
+  select exists (select 1 from public.group_members m where m.group_id = g and m.email = private.my_email() and m.role = 'owner')
 $$;
 
 -- Same check for storage paths, whose first folder is the group id.
-create or replace function public.is_member_path(folder text) returns boolean
-language sql stable security definer set search_path = public as $$
-  select folder ~ '^[0-9a-f-]{36}$' and public.is_member(folder::uuid)
+create or replace function private.is_member_path(folder text) returns boolean
+language sql stable security definer set search_path = '' as $$
+  select folder ~ '^[0-9a-f-]{36}$' and private.is_member(folder::uuid)
 $$;
 
--- Creating a group makes the caller its owner, in one step.
+revoke all on all functions in schema private from public, anon;
+grant execute on all functions in schema private to authenticated;
+
+-- Creating a group makes the caller its owner, in one step. Public on purpose: the app calls it.
 create or replace function public.create_group(group_name text) returns uuid
-language plpgsql security definer set search_path = public as $$
+language plpgsql security definer set search_path = '' as $$
 declare
   gid uuid;
-  me text := public.my_email();
+  me text := private.my_email();
 begin
   if auth.uid() is null or me = '' then
     raise exception 'Sign in first';
@@ -142,27 +151,27 @@ alter table public.entries       enable row level security;
 drop policy if exists "members read group"  on public.groups;
 drop policy if exists "owners rename group" on public.groups;
 drop policy if exists "owners delete group" on public.groups;
-create policy "members read group"  on public.groups for select to authenticated using (public.is_member(id));
-create policy "owners rename group" on public.groups for update to authenticated using (public.is_owner(id)) with check (public.is_owner(id));
-create policy "owners delete group" on public.groups for delete to authenticated using (public.is_owner(id));
+create policy "members read group"  on public.groups for select to authenticated using (private.is_member(id));
+create policy "owners rename group" on public.groups for update to authenticated using (private.is_owner(id)) with check (private.is_owner(id));
+create policy "owners delete group" on public.groups for delete to authenticated using (private.is_owner(id));
 -- (Groups are created only through create_group().)
 
 drop policy if exists "members see members"   on public.group_members;
 drop policy if exists "members add members"   on public.group_members;
 drop policy if exists "remove member or leave" on public.group_members;
 create policy "members see members" on public.group_members for select to authenticated
-  using (public.is_member(group_id));
+  using (private.is_member(group_id));
 create policy "members add members" on public.group_members for insert to authenticated
-  with check (public.is_member(group_id) and role = 'member');
+  with check (private.is_member(group_id) and role = 'member');
 create policy "remove member or leave" on public.group_members for delete to authenticated
-  using (role <> 'owner' and (public.is_owner(group_id) or email = public.my_email()));
+  using (role <> 'owner' and (private.is_owner(group_id) or email = private.my_email()));
 
 do $$
 declare t text;
 begin
   foreach t in array array['parties', 'trips', 'entries'] loop
     execute format('drop policy if exists "group members only" on public.%I', t);
-    execute format('create policy "group members only" on public.%I for all to authenticated using (public.is_member(group_id)) with check (public.is_member(group_id))', t);
+    execute format('create policy "group members only" on public.%I for all to authenticated using (private.is_member(group_id)) with check (private.is_member(group_id))', t);
   end loop;
 end $$;
 
@@ -179,8 +188,14 @@ drop policy if exists "members upload receipts" on storage.objects;
 drop policy if exists "members view receipts"   on storage.objects;
 drop policy if exists "members delete receipts" on storage.objects;
 create policy "members upload receipts" on storage.objects for insert to authenticated
-  with check (bucket_id = 'receipts' and public.is_member_path((storage.foldername(name))[1]));
+  with check (bucket_id = 'receipts' and private.is_member_path((storage.foldername(name))[1]));
 create policy "members view receipts" on storage.objects for select to authenticated
-  using (bucket_id = 'receipts' and public.is_member_path((storage.foldername(name))[1]));
+  using (bucket_id = 'receipts' and private.is_member_path((storage.foldername(name))[1]));
 create policy "members delete receipts" on storage.objects for delete to authenticated
-  using (bucket_id = 'receipts' and public.is_member_path((storage.foldername(name))[1]));
+  using (bucket_id = 'receipts' and private.is_member_path((storage.foldername(name))[1]));
+
+-- Earlier versions kept the helpers in public; remove them (after the rules above stop using them).
+drop function if exists public.is_member_path(text);
+drop function if exists public.is_owner(uuid);
+drop function if exists public.is_member(uuid);
+drop function if exists public.my_email();
