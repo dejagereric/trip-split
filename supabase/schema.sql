@@ -135,6 +135,9 @@ create table if not exists public.entries (
   receipt_path  text,
   created_at    timestamptz not null default now()
 );
+-- Who entered each expense: filled in by the database from the signed-in user's email.
+alter table public.entries
+  add column if not exists created_by_email text default lower(coalesce(auth.jwt() ->> 'email', ''));
 
 create index if not exists parties_group_idx on public.parties (group_id);
 create index if not exists trips_group_idx   on public.trips (group_id);

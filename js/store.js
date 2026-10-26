@@ -97,7 +97,7 @@ async function cloudStore(config) {
   const entryFrom = (r) => ({
     id: r.id, tripId: r.trip_id, kind: r.kind, desc: r.description ?? '', cat: r.category ?? 'Other',
     date: r.spent_on, amount: r.amount_cents, payer: r.payer, shares: r.shares || {}, mode: r.split_mode,
-    from: r.from_party, to: r.to_party, receipt: r.receipt_path || '', createdAt: r.created_at,
+    from: r.from_party, to: r.to_party, receipt: r.receipt_path || '', createdAt: r.created_at, createdBy: r.created_by_email || '',
   });
 
   return {

@@ -188,3 +188,5 @@ main { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 4p
 .auth-msg { margin: 0; font-size: 14px; font-weight: 600; color: var(--danger); }
 .setup .card .field { margin-top: 4px; }
 .setup .row-btns { justify-content: space-between; }
+.you { font-weight: 500; opacity: 0.75; margin-left: 4px; font-size: 0.9em; }
+input[readonly] { background: var(--ground) !important; color: var(--muted); }

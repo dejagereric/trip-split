@@ -9,7 +9,7 @@ const CODES = { '$': 'USD', '€': 'EUR', '£': 'GBP', '¥': 'JPY', '₹': 'INR'
 const CATS = ['Lodging', 'Food', 'Transport', 'Activities', 'Groceries', 'Other'];
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const TRIP_SCREENS = ['balances', 'add', 'ledger', 'settle'];
-const TITLES = { balances: 'Balances', add: 'Add expense', ledger: 'Ledger', settle: 'Settle up', trips: 'Trips', tripEdit: 'Trip', people: 'People', personEdit: 'Person', access: 'Access' };
+const TITLES = { balances: 'Balances', add: 'Add expense', ledger: 'Ledger', settle: 'Settle up', trips: 'Trips', tripEdit: 'Trip', people: 'People', personEdit: 'Person', access: 'Access', me: 'Your details' };
 const MANAGE_LISTS = ['trips', 'people', 'access'];
 const CAN_PICK_CONTACTS = typeof navigator !== 'undefined' && 'contacts' in navigator && typeof navigator.contacts?.select === 'function';
 
@@ -107,6 +107,21 @@ function tripIds(trip = curTrip()) {
   tripEntries(trip.id).forEach((e) => entryPeople(e).forEach((id) => { if (!ids.includes(id)) ids.push(id); }));
   return ids.filter((id) => partyById(id));
 }
+// The signed-in user's own person record: the person whose email matches the sign-in email.
+const myEmail = () => (state.user?.email || '').trim().toLowerCase();
+const myPartyId = () => {
+  const e = myEmail();
+  if (!e) return '';
+  const p = state.data.parties.find((x) => (x.email || '').trim().toLowerCase() === e);
+  return p ? p.id : '';
+};
+// People offered on the Add expense form: the trip's people, plus you (so you're on new expenses by default).
+function formIds() {
+  const ids = tripIds();
+  const me = myPartyId();
+  if (me && !ids.includes(me)) ids.unshift(me);
+  return ids;
+}
 const usesIn = (pid, entries) => entries.filter((e) => entryPeople(e).includes(pid)).length;
 const sortTrips = (ts) => ts.slice().sort((a, b) => (b.start || b.createdAt || '').localeCompare(a.start || a.createdAt || ''));
 const sortEntries = (es) => es.slice().sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.createdAt || '').localeCompare(a.createdAt || ''));
@@ -121,7 +136,7 @@ function av(id, size = 'md') {
 // ---------- form evaluation ----------
 function evalForm() {
   const fm = state.form;
-  const members = tripIds();
+  const members = formIds();
   const amt = cents(fm.amt);
   const inc = members.filter((id) => !fm.excl[id]);
   let shares = {};
@@ -240,7 +255,7 @@ function tripHeaderHtml(trip, calc) {
 
 function manageHeaderHtml(trip) {
   const inList = MANAGE_LISTS.includes(state.screen);
-  const back = inList
+  const back = state.screen === 'me' ? '<span></span>' : inList
     ? (trip ? `<button type="button" class="back" data-action="go" data-screen="balances">${ICON.back}<span class="ellipsis">${esc(trip.name)}</span></button>` : '<span></span>')
     : `<button type="button" class="back" data-action="go" data-screen="${state.screen === 'tripEdit' ? 'trips' : 'people'}">${ICON.back}${state.screen === 'tripEdit' ? 'Trips' : 'People'}</button>`;
   const title = state.screen === 'tripEdit' ? (state.tripForm?.id ? 'Edit trip' : 'New trip')
@@ -281,6 +296,7 @@ function screenHtml() {
     case 'tripEdit': return tripEditHtml();
     case 'people': return peopleHtml();
     case 'personEdit': return personEditHtml();
+    case 'me': return meHtml();
     case 'access': return accessHtml();
     case 'add': return addHtml();
     case 'ledger': return ledgerHtml();
@@ -288,6 +304,8 @@ function screenHtml() {
     default: return balancesHtml();
   }
 }
+
+const youTag = (id) => (id && id === myPartyId() ? '<span class="you">(you)</span>' : '');
 
 function chip(label, action, data, on, extra = '') {
   const attrs = Object.entries(data).map(([k, v]) => `data-${k}="${esc(v)}"`).join(' ');
@@ -361,7 +379,7 @@ function peopleHtml() {
       const tripsIn = state.data.trips.filter((t) => tripIds(t).includes(p.id)).length;
       const contact = [p.phone, p.email].filter(Boolean).join(' · ');
       return `<button type="button" class="list-row as-button" data-action="editPerson" data-id="${esc(p.id)}">${av(p.id, 'md')}
-        <span class="grow"><span class="strong">${esc(p.name)}</span><span class="small muted ellipsis">${esc(contact || 'No contact details')}</span></span>
+        <span class="grow"><span class="strong">${esc(p.name)}${youTag(p.id)}</span><span class="small muted ellipsis">${esc(contact || 'No contact details')}</span></span>
         <span class="small muted">${plural(tripsIn, 'trip', 'trips')}</span></button>`;
     }).join('')}</div>` : '<div class="card center"><p class="strong big">No people yet</p><p class="muted">People are added when you put them on an expense, or here.</p></div>'}
   </div>`;
@@ -376,7 +394,9 @@ function personEditHtml() {
     ${CAN_PICK_CONTACTS ? `<button type="button" class="btn" data-action="fillFromContacts">${ICON.contacts}Fill in from contacts</button>` : ''}
     <label class="field"><span class="lbl">Name</span><input data-pf="name" type="text" maxlength="60" autocomplete="off" value="${esc(f.name)}"></label>
     <label class="field"><span class="lbl">Phone</span><input data-pf="phone" type="tel" autocomplete="off" placeholder="Optional" value="${esc(f.phone)}"></label>
-    <label class="field"><span class="lbl">Email</span><input data-pf="email" type="email" autocomplete="off" placeholder="Optional" value="${esc(f.email)}"></label>
+    ${p && p.id === myPartyId()
+      ? `<label class="field"><span class="lbl">Email</span><input type="email" value="${esc(f.email)}" readonly aria-readonly="true"><span class="small muted">Your sign-in email. It links this person to you.</span></label>`
+      : `<label class="field"><span class="lbl">Email</span><input data-pf="email" type="email" autocomplete="off" placeholder="Optional" value="${esc(f.email)}"></label>`}
     <div class="field"><span class="lbl">Color</span>
       <div class="wrap">${PALETTE.map((c, i) => `<button type="button" class="swatch${f.color === i ? ' on' : ''}" data-action="personColor" data-i="${i}" style="background:${c}" aria-label="Color ${i + 1}" aria-pressed="${f.color === i}"></button>`).join('')}</div>
     </div>
@@ -387,6 +407,37 @@ function personEditHtml() {
     ${p ? `<button type="button" class="btn danger" data-action="deletePerson" data-id="${esc(p.id)}" ${n ? 'disabled' : ''}>Delete person</button>
       ${n ? `<p class="small muted note">${esc(p.name)} is on ${plural(n, 'entry', 'entries')}, so they can’t be deleted. Edit or delete those entries first.</p>` : ''}` : ''}
   </div>`;
+}
+
+// ----- your details (cloud, once per group) -----
+function meHtml() {
+  const f = state.meForm || { name: '', phone: '' };
+  const unlinked = state.data.parties.filter((p) => !(p.email || '').trim());
+  return `<div class="stack gap-lg">
+    <p class="lead">So your group knows who you are. You’ll be added to expenses you enter, and you can take yourself off any of them.</p>
+    ${CAN_PICK_CONTACTS ? `<button type="button" class="btn" data-action="meFromContacts">${ICON.contacts}Fill in from my contact card</button>` : ''}
+    <label class="field"><span class="lbl">Your name</span><input data-mf="name" type="text" maxlength="60" autocomplete="name" autocapitalize="words" placeholder="e.g. Eric de Jager" value="${esc(f.name)}"></label>
+    <label class="field"><span class="lbl">Your phone</span><input data-mf="phone" type="tel" autocomplete="tel" placeholder="Optional" value="${esc(f.phone)}"></label>
+    <p class="small muted note">Tip: tap a field and your phone may offer to fill in your own name and number.</p>
+    <label class="field"><span class="lbl">Email</span><input type="email" value="${esc(myEmail())}" readonly aria-readonly="true"></label>
+    ${unlinked.length && !myPartyId() ? `<div class="field"><span class="lbl">Already on the list under another entry?</span>
+      <div class="wrap">${unlinked.map((p) => chip(av(p.id, 'sm') + 'That’s me: ' + esc(p.name), 'claimParty', { id: p.id }, false)).join('')}</div></div>` : ''}
+    <button type="button" class="btn primary big" data-action="saveMe">Save</button>
+    <button type="button" class="link center" data-action="skipMe">Skip for now</button>
+  </div>`;
+}
+
+// Opens "Your details" when you have no person record yet, or (once) when yours has no phone.
+function needsMe() {
+  if (!store || store.mode !== 'cloud' || !myEmail()) return false;
+  const me = partyById(myPartyId());
+  if (!me) return true;
+  return !me.phone && !pref.get('askedDetails:' + store.groupId);
+}
+function openMe() {
+  const me = partyById(myPartyId());
+  state.meForm = { name: me?.name || '', phone: me?.phone || '' };
+  state.screen = 'me';
 }
 
 // ----- access (cloud) -----
@@ -481,7 +532,7 @@ function balancesHtml() {
 
 // ----- add / edit expense -----
 function pickerHtml(forWhat) {
-  const members = tripIds();
+  const members = formIds();
   const others = state.data.parties.filter((p) => !members.includes(p.id)).sort((a, b) => a.name.localeCompare(b.name));
   const np = state.newPerson;
   return `<div class="card picker">
@@ -502,7 +553,9 @@ function pickerHtml(forWhat) {
 
 function addHtml() {
   const fm = state.form;
-  const members = tripIds();
+  const members = formIds();
+  // New expenses default to you as the payer (or the trip's first person if you're not set up).
+  if (!state.editId && (!fm.payer || !members.includes(fm.payer))) fm.payer = myPartyId() || members[0] || '';
   const picker = state.picker || (!members.length ? 'payer' : null);
   const r = state.receipt;
   const img = r.blobUrl || receiptSrc(r.ref);
@@ -539,12 +592,13 @@ function addHtml() {
     </div>
 
     <div class="field"><span class="lbl">Who paid?</span>
-      <div class="wrap">${members.map((id) => chip(av(id, 'sm') + esc(nameOf(id)), 'payer', { id }, fm.payer === id, 'style="min-height:48px"')).join('')}${addChip('payer')}</div>
+      <div class="wrap">${members.map((id) => chip(av(id, 'sm') + esc(nameOf(id)) + youTag(id), 'payer', { id }, fm.payer === id, 'style="min-height:48px"')).join('')}${addChip('payer')}</div>
       ${picker === 'payer' ? pickerHtml('payer') : ''}
     </div>
 
     ${members.length ? `<div class="field"><span class="lbl">Who shares this cost?</span>
-      <div class="wrap">${members.map((id) => chip((!fm.excl[id] ? ICON.check : '') + esc(nameOf(id)), 'inc', { id }, !fm.excl[id], 'style="min-height:48px"')).join('')}${addChip('share')}</div>
+      <div class="wrap">${members.map((id) => chip((!fm.excl[id] ? ICON.check : '') + esc(nameOf(id)) + youTag(id), 'inc', { id }, !fm.excl[id], 'style="min-height:48px"')).join('')}${addChip('share')}</div>
+      ${myPartyId() && members.includes(myPartyId()) ? `<span class="small muted">${fm.excl[myPartyId()] ? 'You’re not sharing this one.' : 'Entering this for others? Tap your name to take yourself off.'}</span>` : ''}
       ${picker === 'share' ? pickerHtml('share') : ''}
     </div>
 
@@ -607,6 +661,7 @@ function ledgerHtml() {
         </button>
         ${open ? `<div class="entry-body">
           ${rurl ? `<button type="button" class="link with-thumb" data-action="viewReceipt" data-url="${esc(rurl)}"><img src="${esc(rurl)}" alt="">View receipt</button>` : e.receipt ? '<span class="small muted">Loading receipt…</span>' : ''}
+          ${e.createdBy ? `<span class="small muted">Added by ${esc(addedBy(e.createdBy))}</span>` : ''}
           <div class="row-btns">
             ${e.kind === 'expense' ? `<button type="button" class="btn" data-action="editExpense" data-id="${esc(e.id)}">Edit</button>` : ''}
             <button type="button" class="btn danger" data-action="del" data-id="${esc(e.id)}">Delete</button>
@@ -616,6 +671,12 @@ function ledgerHtml() {
     }).join('') : '<p class="muted center pad">Nothing here yet.</p>'}
   </div>`;
 }
+
+const addedBy = (email) => {
+  if (email === myEmail()) return 'you';
+  const p = state.data.parties.find((x) => (x.email || '').trim().toLowerCase() === email);
+  return p ? p.name : email;
+};
 
 // ----- settle -----
 function summaryText(trip, calc, tr, ids) {
@@ -739,6 +800,7 @@ async function enterGroup() {
   render();
   await refresh();
   if (!curTrip()) state.screen = 'trips';
+  if (needsMe()) openMe();
   render();
   startPolling();
 }
@@ -858,7 +920,7 @@ const actions = {
     if (f.start && f.end && f.end < f.start) { flash('The end date is before the start date.'); return; }
     const old = state.data.trips.find((t) => t.id === f.id);
     const trip = old ? { ...old, name, start: f.start, end: f.end, currency: f.currency }
-      : { id: uuid(), name, start: f.start, end: f.end, currency: f.currency, members: [], createdAt: new Date().toISOString() };
+      : { id: uuid(), name, start: f.start, end: f.end, currency: f.currency, members: myPartyId() ? [myPartyId()] : [], createdAt: new Date().toISOString() };
     const before = snapshot();
     await commit(() => {
       replaceIn('trips', trip);
@@ -949,7 +1011,7 @@ const actions = {
   mode(d) {
     const fm = state.form;
     if (d.mode === 'exact' && fm.mode !== 'exact') {
-      const incl = tripIds().filter((id) => !fm.excl[id]);
+      const incl = formIds().filter((id) => !fm.excl[id]);
       const eq = splitEqual(cents(fm.amt), incl);
       fm.custom = Object.fromEntries(incl.map((id) => [id, eq[id] ? (eq[id] / 100).toFixed(2) : '']));
     }
@@ -959,7 +1021,7 @@ const actions = {
   editExpense(d) {
     const e = state.data.entries.find((x) => x.id === d.id);
     if (!e || e.kind !== 'expense') return;
-    const members = tripIds();
+    const members = formIds();
     state.editId = e.id;
     state.form = {
       amt: (e.amount / 100).toFixed(2), desc: e.desc, date: e.date, cat: e.cat, payer: e.payer,
@@ -987,16 +1049,19 @@ const actions = {
       amount: r.amt, payer: fm.payer, shares, mode: fm.mode, receipt: state.receipt.ref || '',
     };
     if (state.receipt.blobUrl) URL.revokeObjectURL(state.receipt.blobUrl);
-    pref.set('lastPayer:' + state.tripId, fm.payer);
+    const trip = curTrip();
+    const joining = [fm.payer, ...Object.keys(shares)].filter((id, i, a) => id && a.indexOf(id) === i && !(trip.members || []).includes(id));
+    const tripAfter = joining.length ? { ...trip, members: [...(trip.members || []), ...joining] } : null;
     const before = snapshot();
     await commit(() => {
+      if (tripAfter) replaceIn('trips', tripAfter);
       replaceIn('entries', entry);
       state.form = blankForm();
       state.receipt = blankReceipt();
       state.editId = null;
       state.picker = null;
       state.screen = old ? 'ledger' : 'balances';
-    }, () => store.saveEntry(entry), () => { state.data = before; }, old ? 'Changes saved' : `Added “${entry.desc}” · ${money(entry.amount)}`);
+    }, async () => { if (tripAfter) await store.saveTrip(tripAfter); await store.saveEntry(entry); }, () => { state.data = before; }, old ? 'Changes saved' : `Added “${entry.desc}” · ${money(entry.amount)}`);
   },
 
   // ledger
@@ -1038,6 +1103,48 @@ const actions = {
     await refresh();
     selectTrip(s.trips[0].id);
     state.screen = 'balances';
+    render();
+  },
+
+  // your details
+  async meFromContacts() {
+    const c = await chooseContact();
+    if (!c) return;
+    state.meForm = { name: c.name || state.meForm.name, phone: c.phone || state.meForm.phone };
+    render();
+  },
+  claimParty(d) {
+    const p = partyById(d.id);
+    if (!p) return;
+    state.meForm = { name: p.name, phone: p.phone || state.meForm?.phone || '' };
+    state.claimId = p.id;
+    render();
+  },
+  async saveMe() {
+    const f = state.meForm;
+    const name = f.name.trim();
+    if (!name) { flash('Enter your name.'); return; }
+    const existing = partyById(myPartyId()) || (state.claimId ? partyById(state.claimId) : null);
+    const p = existing
+      ? { ...existing, name, phone: f.phone.trim(), email: myEmail() }
+      : { id: uuid(), name, phone: f.phone.trim(), email: myEmail(), color: state.data.parties.length % PALETTE.length, createdAt: new Date().toISOString() };
+    pref.set('askedDetails:' + store.groupId, '1');
+    const before = snapshot();
+    state.claimId = null;
+    await commit(() => { replaceIn('parties', p); state.screen = curTrip() ? 'balances' : 'trips'; state.form = blankForm(); },
+      () => store.saveParty(p), () => { state.data = before; }, `Thanks, ${name.split(' ')[0]}`);
+  },
+  async skipMe() {
+    pref.set('askedDetails:' + store.groupId, '1');
+    state.claimId = null;
+    if (!myPartyId()) {
+      // Still add you, named from your email, so expenses can include you. Edit it later under People.
+      const guess = myEmail().split('@')[0].replace(/[._-]+/g, ' ').replace(/\d+/g, '').trim();
+      state.meForm = { name: guess ? guess.replace(/\b\w/g, (c) => c.toUpperCase()) : 'Me', phone: '' };
+      await actions.saveMe();
+      return;
+    }
+    state.screen = curTrip() ? 'balances' : 'trips';
     render();
   },
 
@@ -1217,6 +1324,7 @@ document.addEventListener('input', (ev) => {
   else if (ds.nm) state.newMember = el.value;
   else if (ds.tf && state.tripForm) state.tripForm[ds.tf] = el.value;
   else if (ds.pf && state.personForm) state.personForm[ds.pf] = el.value;
+  else if (ds.mf && state.meForm) state.meForm[ds.mf] = el.value;
 });
 document.addEventListener('keydown', (ev) => {
   if (ev.key === 'Escape' && state.viewUrl) { state.viewUrl = ''; render(); }
@@ -1242,9 +1350,10 @@ document.addEventListener('change', (ev) => {
 const _blankForm = blankForm;
 function formWithDefaults() {
   const f = _blankForm();
-  const ids = tripIds();
+  const ids = formIds();
   const last = pref.get('lastPayer:' + state.tripId);
-  f.payer = ids.includes(last) ? last : ids[0] || '';
+  const me = myPartyId();
+  f.payer = me || (ids.includes(last) ? last : ids[0] || '');
   return f;
 }
 const origGo = actions.go;
