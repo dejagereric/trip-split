@@ -180,3 +180,11 @@ main { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 4p
 .row-btns .btn { flex: 1 1 auto; }
 .btn.danger { align-self: auto; }
 .stack > .btn.danger { align-self: flex-start; }
+
+/* sign-in & access */
+.seg.seg3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.setup .field input { height: 52px; border: 1px solid var(--control); border-radius: 12px; background: var(--card); padding: 0 14px; font-size: 17px; width: 100%; }
+.code-input { letter-spacing: 0.3em; font-variant-numeric: tabular-nums; font-weight: 700; }
+.auth-msg { margin: 0; font-size: 14px; font-weight: 600; color: var(--danger); }
+.setup .card .field { margin-top: 4px; }
+.setup .row-btns { justify-content: space-between; }

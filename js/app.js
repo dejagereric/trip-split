@@ -9,8 +9,8 @@ const CODES = { '$': 'USD', '€': 'EUR', '£': 'GBP', '¥': 'JPY', '₹': 'INR'
 const CATS = ['Lodging', 'Food', 'Transport', 'Activities', 'Groceries', 'Other'];
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const TRIP_SCREENS = ['balances', 'add', 'ledger', 'settle'];
-const TITLES = { balances: 'Balances', add: 'Add expense', ledger: 'Ledger', settle: 'Settle up', trips: 'Trips', tripEdit: 'Trip', people: 'People', personEdit: 'Person' };
-const CLOUD_CONFIGURED = !!(CONFIG.supabaseUrl && CONFIG.supabaseAnonKey);
+const TITLES = { balances: 'Balances', add: 'Add expense', ledger: 'Ledger', settle: 'Settle up', trips: 'Trips', tripEdit: 'Trip', people: 'People', personEdit: 'Person', access: 'Access' };
+const MANAGE_LISTS = ['trips', 'people', 'access'];
 const CAN_PICK_CONTACTS = typeof navigator !== 'undefined' && 'contacts' in navigator && typeof navigator.contacts?.select === 'function';
 
 // ---------- helpers ----------
@@ -52,17 +52,6 @@ const ICON = {
   contacts: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="9" r="3.5"/><path d="M5.5 19a6.5 6.5 0 0 1 13 0"/></svg>',
 };
 
-// ---------- group id (kept in the URL hash, never in the repo) ----------
-function readGroupId() {
-  const m = /(?:^|[#&])group=([A-Za-z0-9_-]{16,64})/.exec(location.hash);
-  if (m) { try { localStorage.setItem('tripsplit:lastGroup', m[1]); } catch {} return m[1]; }
-  try { return localStorage.getItem('tripsplit:lastGroup') || ''; } catch { return ''; }
-}
-function newGroupId() {
-  const a = new Uint8Array(18);
-  crypto.getRandomValues(a);
-  return Array.from(a, (x) => 'abcdefghijklmnopqrstuvwxyz0123456789'[x % 36]).join('');
-}
 const pref = {
   get(k) { try { return localStorage.getItem('tripsplit:' + k) || ''; } catch { return ''; } },
   set(k, v) { try { localStorage.setItem('tripsplit:' + k, v); } catch {} },
@@ -89,7 +78,17 @@ const state = {
   toast: '',
   loading: true,
   error: '',
-  needsGroup: false,
+  // sign-in (cloud mode): checking | signedOut | codeSent | noGroup | ready
+  auth: 'checking',
+  authEmail: '',
+  authCode: '',
+  authMsg: '',
+  authBusy: false,
+  groupName: 'Our trips',
+  user: null,
+  groups: [],
+  members: [],
+  newMember: '',
 };
 let store = null;
 let toastTimer = 0;
@@ -148,7 +147,7 @@ function render() {
   const oldMain = $('#main');
   const keepScroll = oldMain && oldMain.dataset.screen === state.screen ? oldMain.scrollTop : 0;
 
-  if (state.needsGroup) { root.innerHTML = setupHtml(); return; }
+  if (!store || (store.mode === 'cloud' && state.auth !== 'ready')) { root.innerHTML = authHtml(); focusAuth(); return; }
 
   const trip = curTrip();
   if (TRIP_SCREENS.includes(state.screen) && !trip && !state.loading) state.screen = 'trips';
@@ -174,16 +173,56 @@ function render() {
   if (state.screen === 'add') updateAddLive();
 }
 
-function setupHtml() {
+function authHtml() {
+  const busy = state.authBusy ? 'disabled' : '';
+  const msg = state.authMsg ? `<p class="auth-msg" role="alert">${esc(state.authMsg)}</p>` : '';
+  if (!store || state.auth === 'checking') return '<main id="main" class="setup"><h1>Trip Split</h1><p class="muted">Loading…</p></main>';
+  if (state.auth === 'signedOut') {
+    return `<main id="main" class="setup">
+      <h1>Trip Split</h1>
+      <p>Sign in with your email address. We’ll send you a 6-digit code — no password needed.</p>
+      <label class="field"><span class="lbl">Email</span><input data-auth="authEmail" type="email" inputmode="email" autocomplete="email" autocapitalize="off" placeholder="you@example.com" value="${esc(state.authEmail)}"></label>
+      <button type="button" class="btn primary big" data-action="sendCode" ${busy}>${state.authBusy ? 'Sending…' : 'Send code'}</button>
+      ${msg}
+      <p class="small muted">Only people added to a group can see its trips.</p>
+    </main>`;
+  }
+  if (state.auth === 'codeSent') {
+    return `<main id="main" class="setup">
+      <h1>Check your email</h1>
+      <p>Enter the code we sent to <strong>${esc(state.authEmail)}</strong>.</p>
+      <label class="field"><span class="lbl">Code</span><input data-auth="authCode" class="code-input" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="10" placeholder="123456" value="${esc(state.authCode)}"></label>
+      <button type="button" class="btn primary big" data-action="verifyCode" ${busy}>${state.authBusy ? 'Checking…' : 'Sign in'}</button>
+      ${msg}
+      <div class="row-btns"><button type="button" class="link" data-action="sendCode" ${busy}>Send a new code</button><button type="button" class="link" data-action="changeEmail">Use a different email</button></div>
+    </main>`;
+  }
+  // noGroup
+  const me = state.user?.email || '';
   return `<main id="main" class="setup">
-    <h1>Trip Split</h1>
-    <p>This app is connected to a shared database. Create a group for you and the people you travel with, then send them the link. Everyone uses the same link, for every trip.</p>
-    <button class="btn primary" data-action="newGroup">Create our group</button>
-    <p class="muted">Already have a link? Open it on this phone and your trips load.</p>
+    <h1>Welcome</h1>
+    <p>You’re signed in as <strong>${esc(me)}</strong>, but you’re not in a group yet.</p>
+    <div class="card">
+      <span class="strong">Joining someone else’s trips?</span>
+      <span class="muted">Ask them to add <strong>${esc(me)}</strong> under Trips → Access, then tap Check again.</span>
+      <button type="button" class="btn" data-action="checkGroups" ${busy}>Check again</button>
+    </div>
+    <div class="card">
+      <span class="strong">Starting fresh?</span>
+      <label class="field"><span class="lbl">Group name</span><input data-auth="groupName" type="text" maxlength="60" value="${esc(state.groupName)}"></label>
+      <button type="button" class="btn primary" data-action="createGroup" ${busy}>Create our group</button>
+    </div>
+    ${msg}
+    <button type="button" class="link center" data-action="signOut">Sign out</button>
   </main>`;
 }
 
-const syncLabel = () => (store ? (store.mode === 'cloud' ? 'Synced' : 'On this phone only') : '');
+function focusAuth() {
+  const el = $('[data-auth=authCode]') || $('[data-auth=authEmail]');
+  if (el && !el.value) { try { el.focus(); } catch {} }
+}
+
+const syncLabel = () => (store ? (store.mode === 'cloud' ? (state.groups.find((g) => g.id === store.groupId)?.name || 'Synced') : 'On this phone only') : '');
 
 function tripHeaderHtml(trip, calc) {
   const ids = tripIds(trip);
@@ -200,7 +239,7 @@ function tripHeaderHtml(trip, calc) {
 }
 
 function manageHeaderHtml(trip) {
-  const inList = state.screen === 'trips' || state.screen === 'people';
+  const inList = MANAGE_LISTS.includes(state.screen);
   const back = inList
     ? (trip ? `<button type="button" class="back" data-action="go" data-screen="balances">${ICON.back}<span class="ellipsis">${esc(trip.name)}</span></button>` : '<span></span>')
     : `<button type="button" class="back" data-action="go" data-screen="${state.screen === 'tripEdit' ? 'trips' : 'people'}">${ICON.back}${state.screen === 'tripEdit' ? 'Trips' : 'People'}</button>`;
@@ -210,9 +249,10 @@ function manageHeaderHtml(trip) {
   return `<header class="top">
     <div class="top-row">${back}<span class="sync">${esc(syncLabel())}</span></div>
     <h1>${title}</h1>
-    ${inList ? `<div class="seg" role="group" aria-label="Manage">
+    ${inList ? `<div class="seg${store?.mode === 'cloud' ? ' seg3' : ''}" role="group" aria-label="Manage">
       <button type="button" class="${state.screen === 'trips' ? 'on' : ''}" data-action="go" data-screen="trips" aria-pressed="${state.screen === 'trips'}">Trips</button>
       <button type="button" class="${state.screen === 'people' ? 'on' : ''}" data-action="go" data-screen="people" aria-pressed="${state.screen === 'people'}">People</button>
+      ${store?.mode === 'cloud' ? `<button type="button" class="${state.screen === 'access' ? 'on' : ''}" data-action="go" data-screen="access" aria-pressed="${state.screen === 'access'}">Access</button>` : ''}
     </div>` : ''}
   </header>`;
 }
@@ -241,6 +281,7 @@ function screenHtml() {
     case 'tripEdit': return tripEditHtml();
     case 'people': return peopleHtml();
     case 'personEdit': return personEditHtml();
+    case 'access': return accessHtml();
     case 'add': return addHtml();
     case 'ledger': return ledgerHtml();
     case 'settle': return settleHtml();
@@ -339,10 +380,65 @@ function personEditHtml() {
     <div class="field"><span class="lbl">Color</span>
       <div class="wrap">${PALETTE.map((c, i) => `<button type="button" class="swatch${f.color === i ? ' on' : ''}" data-action="personColor" data-i="${i}" style="background:${c}" aria-label="Color ${i + 1}" aria-pressed="${f.color === i}"></button>`).join('')}</div>
     </div>
+    ${p && p.email && store?.mode === 'cloud' ? (isMember(p.email)
+      ? `<p class="small muted note">${esc(p.email)} can sign in and see your trips.</p>`
+      : `<button type="button" class="btn" data-action="grantAccess" data-email="${esc(p.email)}">Let ${esc(p.name)} sign in</button>`) : ''}
     <button type="button" class="btn primary big" data-action="savePerson">${p ? 'Save' : 'Add person'}</button>
     ${p ? `<button type="button" class="btn danger" data-action="deletePerson" data-id="${esc(p.id)}" ${n ? 'disabled' : ''}>Delete person</button>
       ${n ? `<p class="small muted note">${esc(p.name)} is on ${plural(n, 'entry', 'entries')}, so they can’t be deleted. Edit or delete those entries first.</p>` : ''}` : ''}
   </div>`;
+}
+
+// ----- access (cloud) -----
+const isMember = (email) => state.members.some((m) => m.email === String(email || '').trim().toLowerCase());
+const appUrl = () => location.origin + location.pathname;
+
+function inviteLink(email) {
+  const body = `I’ve added you to our trips in Trip Split.\n\nOpen ${appUrl()} and sign in with this email address (${email}). You’ll get a 6-digit code — no password.\n\nOn your phone, add it to your home screen: Safari → Share → Add to Home Screen, or Chrome → ⋮ → Install app.`;
+  return `mailto:${esc(email)}?subject=${encodeURIComponent('Join our trips on Trip Split')}&body=${encodeURIComponent(body)}`;
+}
+
+function accessHtml() {
+  const me = (state.user?.email || '').toLowerCase();
+  const iOwn = state.members.some((m) => m.email === me && m.role === 'owner');
+  const group = state.groups.find((g) => g.id === store.groupId);
+  return `<div class="stack">
+    <div class="card">
+      <span class="lbl">Signed in as</span>
+      <span class="strong">${esc(me)}</span>
+      <span class="small muted">Group: ${esc(group?.name || '')}</span>
+      <button type="button" class="btn" data-action="signOut">Sign out</button>
+    </div>
+    ${state.groups.length > 1 ? `<div class="field"><span class="lbl">Your groups</span><div class="wrap">${state.groups.map((g) => chip(esc(g.name), 'switchGroup', { id: g.id }, g.id === store.groupId)).join('')}</div></div>` : ''}
+    <h2>Who can sign in</h2>
+    <p class="small muted note">Only these email addresses can open this group’s trips. Each person signs in with a code sent to their address.</p>
+    <div class="card tight">
+      ${state.members.map((m) => {
+        const mine = m.email === me;
+        const canRemove = m.role !== 'owner' && (iOwn || mine);
+        return `<div class="list-row"><span class="grow"><span class="strong ellipsis">${esc(m.email)}</span><span class="small muted">${m.role === 'owner' ? 'Owner' : 'Member'}${mine ? ' · you' : ''}</span></span>
+          ${!mine ? `<a class="btn small-btn" href="${inviteLink(m.email)}">Invite</a>` : ''}
+          ${canRemove ? `<button type="button" class="btn small-btn" data-action="removeMember" data-email="${esc(m.email)}">${mine ? 'Leave' : 'Remove'}</button>` : ''}</div>`;
+      }).join('')}
+    </div>
+    <div class="newperson">
+      <input data-nm="1" type="email" inputmode="email" autocomplete="off" autocapitalize="off" placeholder="Add an email address" aria-label="Email address to add" value="${esc(state.newMember)}">
+      <button type="button" class="btn primary" data-action="addMember">Give access</button>
+    </div>
+    <p class="small muted note">After adding someone, tap Invite to email them the link.</p>
+  </div>`;
+}
+
+const pendingSign = new Set();
+function receiptSrc(ref) {
+  if (!ref || !store) return '';
+  const u = store.receiptUrl(ref);
+  if (u) return u;
+  if (!pendingSign.has(ref)) {
+    pendingSign.add(ref);
+    store.signReceipt(ref).then(() => { pendingSign.delete(ref); softRender(); }).catch(() => { pendingSign.delete(ref); });
+  }
+  return '';
 }
 
 // ----- balances -----
@@ -409,7 +505,7 @@ function addHtml() {
   const members = tripIds();
   const picker = state.picker || (!members.length ? 'payer' : null);
   const r = state.receipt;
-  const img = r.blobUrl || (r.ref && store ? store.receiptUrl(r.ref) : '');
+  const img = r.blobUrl || receiptSrc(r.ref);
   const receiptTitle = r.status === 'reading' ? 'Reading receipt…' : r.status === 'done' ? 'Receipt attached' : 'Scan a receipt';
   const receiptMsg = r.status === 'reading' ? 'Pulling out what it was, the date and the total.'
     : r.status === 'done' ? r.note
@@ -502,7 +598,7 @@ function ledgerHtml() {
     ${rows.length ? rows.map((e) => {
       const open = state.openId === e.id;
       const dots = (e.kind === 'payment' ? [e.from, e.to] : Object.keys(e.shares).filter((id) => e.shares[id] > 0)).map((id) => av(id, 'dot')).join('');
-      const rurl = e.receipt && store ? store.receiptUrl(e.receipt) : '';
+      const rurl = open ? receiptSrc(e.receipt) : '';
       const meta = `${fmtDay(e.date)} · ${e.kind === 'payment' ? 'Settle-up payment' : esc(e.cat)}${e.receipt ? ' · Receipt' : ''}`;
       return `<div class="card entry">
         <button type="button" class="entry-head" data-action="toggle" data-id="${esc(e.id)}" aria-expanded="${open}">
@@ -510,7 +606,7 @@ function ledgerHtml() {
           <span class="entry-right"><span class="strong num">${money(e.amount)}</span><span class="dots">${dots}</span></span>
         </button>
         ${open ? `<div class="entry-body">
-          ${rurl ? `<button type="button" class="link with-thumb" data-action="viewReceipt" data-url="${esc(rurl)}"><img src="${esc(rurl)}" alt="">View receipt</button>` : ''}
+          ${rurl ? `<button type="button" class="link with-thumb" data-action="viewReceipt" data-url="${esc(rurl)}"><img src="${esc(rurl)}" alt="">View receipt</button>` : e.receipt ? '<span class="small muted">Loading receipt…</span>' : ''}
           <div class="row-btns">
             ${e.kind === 'expense' ? `<button type="button" class="btn" data-action="editExpense" data-id="${esc(e.id)}">Edit</button>` : ''}
             <button type="button" class="btn danger" data-action="del" data-id="${esc(e.id)}">Delete</button>
@@ -592,7 +688,15 @@ function softRender() {
 
 async function refresh() {
   try {
-    state.data = await store.load();
+    if (store.mode === 'cloud') {
+      const [data, members] = await Promise.all([store.load(), store.members()]);
+      state.data = data;
+      state.members = members;
+      const me = (state.user?.email || '').toLowerCase();
+      if (!members.some((m) => m.email === me)) { await enterGroup(); return; } // removed from this group
+    } else {
+      state.data = await store.load();
+    }
     state.error = '';
     if (!curTrip()) {
       const fallback = sortTrips(state.data.trips)[0];
@@ -600,10 +704,52 @@ async function refresh() {
       if (!fallback && TRIP_SCREENS.includes(state.screen)) state.screen = 'trips';
     }
   } catch (err) {
+    if (store.mode === 'cloud' && (err?.status === 401 || /jwt|token|not authenticated/i.test(err?.message || '')) && !(await store.auth.user())) {
+      state.auth = 'signedOut';
+      state.authMsg = 'Your sign-in expired. Sign in again.';
+      render();
+      return;
+    }
     state.error = (err && err.message) || 'Network error';
   }
   state.loading = false;
   softRender();
+}
+
+// After sign-in: open the last-used group, or ask to create/join one.
+async function enterGroup() {
+  state.authBusy = true;
+  render();
+  try {
+    state.groups = await store.listGroups();
+  } catch (err) {
+    state.groups = [];
+    state.authMsg = 'Couldn’t reach the database. ' + (err?.message || '');
+  }
+  state.authBusy = false;
+  if (!state.groups.length) { state.auth = 'noGroup'; render(); return; }
+  const last = pref.get('activeGroup');
+  const g = state.groups.find((x) => x.id === last) || state.groups[0];
+  store.useGroup(g.id);
+  pref.set('activeGroup', g.id);
+  state.auth = 'ready';
+  state.authMsg = '';
+  state.loading = true;
+  state.tripId = pref.get('activeTrip:' + g.id);
+  render();
+  await refresh();
+  if (!curTrip()) state.screen = 'trips';
+  render();
+  startPolling();
+}
+
+let polling = false;
+function startPolling() {
+  if (polling || store.mode !== 'cloud') return;
+  polling = true;
+  // Light polling keeps everyone's phones in step while the app is open.
+  setInterval(() => { if (state.auth === 'ready' && document.visibilityState === 'visible') refresh(); }, 15000);
+  document.addEventListener('visibilitychange', () => { if (state.auth === 'ready' && document.visibilityState === 'visible') refresh(); });
 }
 
 // Apply a change locally right away, then save; undo and explain if saving fails.
@@ -626,7 +772,7 @@ const snapshot = () => JSON.parse(JSON.stringify(state.data));
 
 function selectTrip(id) {
   state.tripId = id;
-  pref.set('activeTrip', id);
+  pref.set('activeTrip:' + (store ? store.groupId : ''), id);
   state.filter = 'all';
   state.openId = null;
   state.editId = null;
@@ -894,7 +1040,81 @@ const actions = {
     state.screen = 'balances';
     render();
   },
-  newGroup() { location.hash = 'group=' + newGroupId(); location.reload(); },
+
+  // sign-in
+  async sendCode() {
+    const email = state.authEmail.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { state.authMsg = 'Enter a valid email address.'; render(); return; }
+    state.authEmail = email;
+    state.authBusy = true; state.authMsg = ''; render();
+    try {
+      await store.auth.sendCode(email);
+      state.auth = 'codeSent'; state.authCode = ''; state.authMsg = '';
+    } catch (err) {
+      state.authMsg = /rate|limit|seconds/i.test(err?.message || '') ? 'Too many codes requested. Wait a minute and try again.' : 'Couldn’t send the code. ' + (err?.message || '');
+    }
+    state.authBusy = false; render();
+  },
+  async verifyCode() {
+    const code = state.authCode.replace(/\s/g, '');
+    if (!/^\d{6,10}$/.test(code)) { state.authMsg = 'Enter the code from the email.'; render(); return; }
+    state.authBusy = true; state.authMsg = ''; render();
+    try {
+      state.user = await store.auth.verifyCode(state.authEmail, code);
+      state.authBusy = false;
+      await enterGroup();
+    } catch (err) {
+      state.authBusy = false;
+      state.authMsg = /expired|invalid/i.test(err?.message || '') ? 'That code is wrong or expired. Check it, or send a new one.' : 'Couldn’t sign in. ' + (err?.message || '');
+      render();
+    }
+  },
+  changeEmail() { state.auth = 'signedOut'; state.authCode = ''; state.authMsg = ''; render(); },
+  async checkGroups() { state.authMsg = ''; await enterGroup(); if (state.auth === 'noGroup') { state.authMsg = 'Not added yet.'; render(); } },
+  async createGroup() {
+    state.authBusy = true; state.authMsg = ''; render();
+    try {
+      const id = await store.createGroup(state.groupName.trim() || 'Our trips');
+      pref.set('activeGroup', id);
+      await enterGroup();
+    } catch (err) {
+      state.authBusy = false; state.authMsg = 'Couldn’t create the group. ' + (err?.message || ''); render();
+    }
+  },
+  async signOut() {
+    if (!window.confirm('Sign out of Trip Split on this device?')) return;
+    await store.auth.signOut();
+    Object.assign(state, { auth: 'signedOut', user: null, groups: [], members: [], data: { trips: [], parties: [], entries: [] }, tripId: '', screen: 'balances', authCode: '', authMsg: '' });
+    render();
+  },
+  async switchGroup(d) { pref.set('activeGroup', d.id); state.screen = 'trips'; await enterGroup(); },
+  async addMember() {
+    const email = state.newMember.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { flash('Enter a valid email address.'); return; }
+    if (isMember(email)) { flash('They already have access.'); return; }
+    await actions.grantAccess({ email });
+    state.newMember = '';
+    render();
+  },
+  async grantAccess(d) {
+    const email = d.email.trim().toLowerCase();
+    try {
+      await store.addMember(email);
+      state.members = state.members.concat([{ email, role: 'member', added_at: new Date().toISOString() }]);
+      flash(`${email} can now sign in. Tap Invite to send them the link.`);
+    } catch (err) { flash('Couldn’t add them. ' + (err?.message || '')); }
+  },
+  async removeMember(d) {
+    const me = (state.user?.email || '').toLowerCase();
+    const leaving = d.email === me;
+    if (!window.confirm(leaving ? 'Leave this group? You’ll lose access to its trips.' : `Remove ${d.email}? They won’t be able to see these trips any more.`)) return;
+    try {
+      await store.removeMember(d.email);
+      if (leaving) { pref.set('activeGroup', ''); await enterGroup(); return; }
+      state.members = state.members.filter((m) => m.email !== d.email);
+      flash(`${d.email} removed`);
+    } catch (err) { flash('Couldn’t remove them. ' + (err?.message || '')); }
+  },
 };
 
 // ---------- receipt capture ----------
@@ -993,12 +1213,22 @@ document.addEventListener('input', (ev) => {
     else state.form[ds.field] = el.value;
     updateAddLive();
   } else if (ds.np) state.newPerson[ds.np] = el.value;
+  else if (ds.auth) state[ds.auth] = el.value;
+  else if (ds.nm) state.newMember = el.value;
   else if (ds.tf && state.tripForm) state.tripForm[ds.tf] = el.value;
   else if (ds.pf && state.personForm) state.personForm[ds.pf] = el.value;
 });
 document.addEventListener('keydown', (ev) => {
   if (ev.key === 'Escape' && state.viewUrl) { state.viewUrl = ''; render(); }
-  if (ev.key === 'Enter' && ev.target.dataset && ev.target.dataset.np) { ev.preventDefault(); actions.createPerson(); }
+  const ds = ev.target.dataset || {};
+  if (ev.key === 'Enter' && ds.np) { ev.preventDefault(); actions.createPerson(); }
+  if (ev.key === 'Enter' && ds.nm) { ev.preventDefault(); actions.addMember(); }
+  if (ev.key === 'Enter' && ds.auth && !state.authBusy) {
+    ev.preventDefault();
+    if (ds.auth === 'authEmail') actions.sendCode();
+    else if (ds.auth === 'authCode') actions.verifyCode();
+    else if (ds.auth === 'groupName') actions.createGroup();
+  }
 });
 document.addEventListener('change', (ev) => {
   if (ev.target.id === 'receipt-input') {
@@ -1025,26 +1255,25 @@ actions.go = (d) => {
 
 // ---------- boot ----------
 async function boot() {
-  const groupId = readGroupId();
-  if (CLOUD_CONFIGURED && !groupId) { state.needsGroup = true; render(); return; }
+  render();
   try {
-    store = await createStore(CONFIG, groupId);
+    store = await createStore(CONFIG);
   } catch (err) {
-    state.loading = false;
-    state.error = 'Couldn’t reach the shared database. ' + ((err && err.message) || '');
-    render();
+    document.querySelector('#app').innerHTML = `<main id="main" class="setup"><h1>Trip Split</h1><p>Couldn’t reach the database. Check your connection and reload.</p><p class="small muted">${esc(err?.message || '')}</p></main>`;
     return;
   }
-  state.tripId = pref.get('activeTrip');
+  if (store.mode === 'cloud') {
+    state.user = await store.auth.user().catch(() => null);
+    if (!state.user) { state.auth = 'signedOut'; render(); return; }
+    await enterGroup();
+    return;
+  }
+  state.auth = 'ready';
+  state.tripId = pref.get('activeTrip:local');
   render();
   await refresh();
   if (!curTrip()) state.screen = 'trips';
   render();
-  if (store.mode === 'cloud') {
-    // Light polling keeps everyone's phones in step while the app is open.
-    setInterval(() => { if (document.visibilityState === 'visible') refresh(); }, 15000);
-    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refresh(); });
-  }
 }
 
 if ('serviceWorker' in navigator) {

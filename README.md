@@ -15,9 +15,10 @@ No App Store or Google Play listing needed. It's a website you add to your home 
 
 ## Screens
 
-- **Trips / People** (tap the trip name at the top):
+- **Trips / People / Access** (tap the trip name at the top):
   - Trips: create, rename, set dates and currency, switch, delete.
   - People: add, edit or delete people. Each has a name, phone, email and color, and can be filled in from your contacts.
+  - Access (once connected): who can sign in, invites, sign out.
 - **Balances**: each person's total spent, total shared spending, and who would pay whom if you squared up now.
 - **Add / edit expense**: scan a receipt (fills in description, date and total), amount, date, category, who paid, who shares it, and an equal or exact-amount split.
 - **Ledger**: every entry for the trip, filterable by person. Filtering shows that person's **Spent** and **Benefitted** totals. Tap an entry to view its receipt, edit it or delete it.
@@ -44,7 +45,7 @@ Open the printed address and tap **New trip**, or **Try it with sample data**.
 3. On GitHub, open **Settings → Pages**. Under *Build and deployment* choose **Deploy from a branch**, branch `main`, folder `/ (root)`, then **Save**.
 4. After a minute the app is live at `https://dejagereric.github.io/trip-split/`.
 
-Free GitHub Pages needs a **public** repo. Nothing secret is stored in the repo (see Privacy).
+Free GitHub Pages needs a **public** repo, and the page itself is public. That's fine: nothing secret is in the repo, and once Supabase is connected nobody sees any data without signing in (see Privacy).
 
 ## 3. Install on each phone
 
@@ -53,13 +54,20 @@ Free GitHub Pages needs a **public** repo. Nothing secret is stored in the repo 
 
 It then opens full screen with its own icon. The **Scan** button opens the rear camera.
 
-## 4. Connect the shared database and receipt reading (Supabase)
+## 4. Connect the shared database, sign-in and receipt reading (Supabase)
 
-Demo mode is per-phone. To have everyone's phones share trips and to read receipts automatically:
+Demo mode is per-phone. To share trips across phones, require sign-in and read receipts automatically:
 
 1. Create a free project at [supabase.com](https://supabase.com).
-2. **SQL Editor → New query**: paste `supabase/schema.sql`, run it. That creates the `parties`, `trips` and `entries` tables, their access rules and the `receipts` photo bucket.
-3. Get an Anthropic API key at [console.anthropic.com](https://console.anthropic.com). Then deploy the receipt reader with the [Supabase CLI](https://supabase.com/docs/guides/cli):
+2. **SQL Editor → New query**: paste `supabase/schema.sql`, run it. That creates the groups, members, people, trips and expenses tables, the access rules, and a **private** `receipts` photo bucket. It's safe to run again.
+3. **Sign-in emails send a code, not a link.** In **Authentication → Emails → Templates**, edit both **Magic Link** and **Confirm signup**. Put the code in the message body, for example:
+   ```html
+   <h2>Your Trip Split code</h2>
+   <p>Enter this code in the app: <strong>{{ .Token }}</strong></p>
+   ```
+   A code works inside the installed home-screen app. A link would open in the browser instead.
+4. **Authentication → Sign In / Providers → Email**: make sure *Email* is enabled. Leave *Allow new users to sign up* on: anyone can request a code, but they see nothing until a group member adds their email.
+5. Get an Anthropic API key at [console.anthropic.com](https://console.anthropic.com). Then deploy the receipt reader with the [Supabase CLI](https://supabase.com/docs/guides/cli):
    ```bash
    supabase login
    supabase link --project-ref <your-project-ref>
@@ -67,20 +75,24 @@ Demo mode is per-phone. To have everyone's phones share trips and to read receip
    supabase secrets set --env-file supabase/.env
    supabase functions deploy extract-receipt --no-verify-jwt
    ```
-   `supabase/.env` is gitignored, so your key stays on your computer for reference and never reaches GitHub. `--no-verify-jwt` is needed because the new `sb_publishable_…` keys aren't JWTs. The function guards itself instead: it only answers requests from a group that has at least one trip.
-4. **Project Settings → API Keys**: copy the *Project URL* and the *publishable* key (or legacy *anon* key) into `supabaseUrl` and `supabaseAnonKey` in `js/config.js`. Bump `VERSION` in `sw.js`, then commit and push.
-5. Open the app and tap **Create our group**. Send the resulting link (it ends in `#group=…`) to the people you travel with. Everyone opens that link and adds it to their home screen. The same link covers every trip.
+   `supabase/.env` is gitignored, so your key stays on your computer for reference and never reaches GitHub. `--no-verify-jwt` is needed because the new `sb_publishable_…` keys aren't JWTs. The function checks the caller itself: they must be signed in and a member of the group.
+6. **Project Settings → API Keys**: copy the *Project URL* and the *publishable* key into `supabaseUrl` and `supabaseAnonKey` in `js/config.js`. Bump `VERSION` in `sw.js`, then commit and push.
+7. Open the app, enter your email, type the code, and tap **Create our group**. You're the group's owner.
+8. Add the people you travel with under **Trips → Access → Give access** (or **People → a person → Let them sign in**). Tap **Invite** to email them the app link. They sign in with their own email; nothing to forward.
 
 The app checks for changes every 15 seconds while open, and whenever it comes back to the foreground.
+
+**Email limits:** Supabase's built-in email sender only allows a few emails per hour and is meant for testing. That's usually fine for a handful of people signing in once per phone. If codes stop arriving, set up your own email sender (for example Resend or Postmark) under **Authentication → Emails → SMTP Settings**.
 
 **Cost:** Supabase's free tier is plenty. Each receipt scan is one small call to a Haiku-class model, a fraction of a cent.
 
 ## Privacy
 
-- The repo holds only public settings. The Supabase anon key is meant to be public; the access rules do the protecting.
-- Your group has a random **group id** that lives only in the share link. The database returns rows only to requests carrying that id, so anyone holding the link can see and edit the group's trips and people, including phone numbers and emails. Treat it like a shared-album link.
-- Receipt photos sit in a public bucket under unguessable paths. Anyone with a photo's exact URL can view it, but the bucket can't be listed.
-- The Anthropic key lives only in the Supabase function's secrets, never in the app.
+- **Only approved email addresses get in.** The database itself checks that the signed-in, code-verified email is on the group's list before returning or changing anything. The app link alone is useless.
+- **The group owner can remove anyone.** Members can add people and can leave. Removed people lose access on their next refresh.
+- **Receipt photos are private.** They're shown through links that expire after an hour, and only to group members.
+- **The repo holds only public settings.** The publishable key is meant to be public; the access rules do the protecting. Making the repo public (for free GitHub Pages) exposes the code, not your data.
+- **The Anthropic key never reaches the app.** It lives only in the Supabase function's secrets, plus your gitignored `supabase/.env`.
 
 ## How the math works
 

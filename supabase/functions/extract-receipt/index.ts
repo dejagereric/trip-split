@@ -1,6 +1,7 @@
 // Supabase Edge Function: reads a receipt photo with a lightweight Claude model.
-// Deploy:  supabase functions deploy extract-receipt
-// Secret:  supabase secrets set ANTHROPIC_API_KEY=sk-ant-...
+// Deploy:  supabase functions deploy extract-receipt --no-verify-jwt
+//          (the function checks the caller's sign-in and group membership itself)
+// Secret:  supabase secrets set --env-file supabase/.env   (see supabase/.env.example)
 // Optional: supabase secrets set RECEIPT_MODEL=<model id>  (defaults to a Haiku model)
 
 const CORS = {
@@ -49,19 +50,19 @@ Deno.serve(async (req) => {
   const key = Deno.env.get('ANTHROPIC_API_KEY');
   if (!key) return json({ error: 'not_configured' }, 500);
 
-  // Deployed with --no-verify-jwt (publishable keys aren't JWTs), so only answer callers
-  // whose group actually has a trip. Stops strangers from spending the API credit.
+  // Only signed-in members of the group may use the function (it spends API credit).
+  // We ask the database, as the caller, whether it can see itself in group_members:
+  // row-level security only shows member rows to members, and rejects bad or expired tokens.
   const groupId = req.headers.get('x-group-id') ?? '';
-  if (!/^[A-Za-z0-9_-]{16,64}$/.test(groupId)) return json({ error: 'unauthorized' }, 401);
+  const auth = req.headers.get('authorization') ?? '';
+  const apikey = req.headers.get('apikey') ?? Deno.env.get('SUPABASE_ANON_KEY') ?? '';
   const sbUrl = Deno.env.get('SUPABASE_URL');
-  const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
-  if (sbUrl && serviceKey) {
-    const check = await fetch(`${sbUrl}/rest/v1/trips?select=id&limit=1&group_id=eq.${encodeURIComponent(groupId)}`, {
-      headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}` },
-    });
-    const rows = check.ok ? await check.json() : [];
-    if (!Array.isArray(rows) || !rows.length) return json({ error: 'unauthorized' }, 401);
-  }
+  if (!/^[0-9a-f-]{36}$/.test(groupId) || !/^Bearer\s+\S+/.test(auth) || !sbUrl || !apikey) return json({ error: 'unauthorized' }, 401);
+  const check = await fetch(`${sbUrl}/rest/v1/group_members?select=email&limit=1&group_id=eq.${groupId}`, {
+    headers: { apikey, Authorization: auth },
+  });
+  const rows = check.ok ? await check.json() : [];
+  if (!Array.isArray(rows) || !rows.length) return json({ error: 'unauthorized' }, 401);
 
   let body: { image?: string; mediaType?: string; year?: number };
   try { body = await req.json(); } catch { return json({ error: 'bad_request' }, 400); }
