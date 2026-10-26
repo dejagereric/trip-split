@@ -110,7 +110,7 @@ create table if not exists public.trips (
   id          uuid primary key,
   group_id    uuid not null references public.groups(id) on delete cascade,
   name        text not null,
-  currency    text not null default '$',
+  currency    text not null default 'USD',
   start_on    date,
   end_on      date,
   member_ids  jsonb not null default '[]'::jsonb,
@@ -138,6 +138,21 @@ create table if not exists public.entries (
 -- Who entered each expense: filled in by the database from the signed-in user's email.
 alter table public.entries
   add column if not exists created_by_email text default lower(coalesce(auth.jwt() ->> 'email', ''));
+
+-- Multi-currency. A trip's `currency` is its ledger currency (ISO code); every entry's
+-- amount_cents is in that currency. These columns record what was actually spent.
+alter table public.entries
+  add column if not exists orig_amount_cents integer,          -- amount in the currency paid
+  add column if not exists orig_currency text,                 -- ISO code paid in
+  add column if not exists fx_rate numeric(18, 8),             -- 1 orig_currency = fx_rate ledger currency
+  add column if not exists fx_date date;                       -- date the rate is for
+-- Earlier versions stored currency symbols; convert them to ISO codes.
+update public.trips set currency = case currency
+  when '$' then 'USD' when '€' then 'EUR' when '£' then 'GBP' when '¥' then 'JPY'
+  when '₹' then 'INR' when 'A$' then 'AUD' when 'C$' then 'CAD' when 'CHF' then 'CHF'
+  else currency end
+where currency !~ '^[A-Z]{3}$';
+alter table public.trips alter column currency set default 'USD';
 
 create index if not exists parties_group_idx on public.parties (group_id);
 create index if not exists trips_group_idx   on public.trips (group_id);
