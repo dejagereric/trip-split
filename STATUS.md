@@ -48,7 +48,7 @@ Do these in order (the DNS record must exist before GitHub switches addresses):
 
 ## Waiting on Eric
 
-- [ ] **Turn on invite-only sign-up:** Supabase → Authentication → Hooks → Before User Created → Postgres → `public.hook_invite_only_signup` → Enable. Until then, strangers can still request a code (they see nothing, but an account gets created).
+- [x] **Invite-only sign-up hook enabled** (Oct 26): Supabase → Authentication → Hooks → Before User Created → `public.hook_invite_only_signup`.
 
 - [ ] Google Cloud OAuth client ID for Sheets export (README → Google Sheets export setup), then Claude puts it in `js/config.js`.
 - [ ] Confirm the bottom tab bar now stays put on the Pixel (Balances and Ledger).
