@@ -1,4 +1,12 @@
 node_modules/
 .DS_Store
-.env
 supabase/.temp/
+
+# Local secrets: never commit. Copy supabase/.env.example to supabase/.env.
+.env
+.env.*
+!.env.example
+supabase/.env
+supabase/.env.*
+!supabase/.env.example
+*.local
