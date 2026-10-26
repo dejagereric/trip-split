@@ -44,6 +44,7 @@ Open the printed address and tap **New trip**, or **Try it with sample data**.
 2. Commit and push to `main`.
 3. On GitHub, open **Settings → Pages**. Under *Build and deployment* choose **Deploy from a branch**, branch `main`, folder `/ (root)`, then **Save**.
 4. After a minute the app is live at `https://dejagereric.github.io/trip-split/`.
+5. Optional custom domain (this repo uses **https://trips.ericdejager.com**): at your DNS host add a `CNAME` record `trips` → `dejagereric.github.io`, then enter the domain under **Settings → Pages → Custom domain** and tick **Enforce HTTPS** once GitHub issues the certificate. The github.io address then redirects to it.
 
 Free GitHub Pages needs a **public** repo, and the page itself is public. That's fine: nothing secret is in the repo, and once Supabase is connected nobody sees any data without signing in (see Privacy).
 

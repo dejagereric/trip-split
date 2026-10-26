@@ -1,7 +1,7 @@
 {
   "name": "Trip Split",
   "short_name": "Trip Split",
-  "description": "Track and settle shared vacation costs between three parties.",
+  "description": "Track and settle shared trip costs with the people you travel with.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

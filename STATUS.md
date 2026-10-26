@@ -1,11 +1,11 @@
 # Trip Split: where we left off
 
-_Last updated: October 25, 2026_
+_Last updated: October 26, 2026_
 
 ## Done
 
 - **App** (this repo, `main`): trips, people (name / phone / email, contact picker), add / edit expenses with receipt scan, ledger with Spent / Benefitted filter, settle up with Text / Email, email-code sign-in, Access screen (give access, invite, remove, sign out).
-- **Hosting:** GitHub Pages is on, live at https://dejagereric.github.io/trip-split/
+- **Hosting:** GitHub Pages, now at **https://trips.ericdejager.com** (the github.io address redirects there).
 - **Supabase project** `trip-split` (ref `pmutzpswuqvrtkdqplgs`):
   - Schema applied (migrations `email_signin_groups`, `move_access_helpers_to_private_schema`). Matches `supabase/schema.sql`.
   - Access rules tested in the live database (owner, outsider, member, signed-out), and no test data was left.
@@ -23,12 +23,12 @@ Note (Oct 26): trips.ericdejager.com already answers with something before our r
 
 Do these in order (the DNS record must exist before GitHub switches addresses):
 
-1. [ ] GoDaddy DNS: add record type `CNAME`, name `trips`, value `dejagereric.github.io`, TTL default.
-2. [ ] Wait for DNS to take effect (minutes, up to an hour).
-3. [ ] GitHub repo → Settings → Pages → Custom domain: `trips.ericdejager.com` → Save. GitHub adds a `CNAME` file to the repo.
-4. [ ] Tick **Enforce HTTPS** once the certificate is ready.
+1. [x] GoDaddy DNS: add record type `CNAME`, name `trips`, value `dejagereric.github.io`, TTL default.
+2. [x] Wait for DNS to take effect (minutes, up to an hour).
+3. [x] GitHub repo → Settings → Pages → Custom domain: `trips.ericdejager.com` → Save. GitHub adds a `CNAME` file to the repo.
+4. [ ] Tick **Enforce HTTPS** once the certificate is ready. (Oct 26: the site serves over http and GitHub is issuing the certificate automatically. If it's still unavailable after a few hours, remove and re-add the custom domain.)
 5. [ ] Optional: verify ericdejager.com under GitHub account → Settings → Pages (a TXT record).
-6. [ ] Claude: confirm the site answers at the new address, and update the README's address.
+6. [x] Claude: confirmed the site answers at the new address, and updated the README.
 
 ## Then: first real run
 
