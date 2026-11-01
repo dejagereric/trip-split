@@ -166,6 +166,17 @@ A **group** is one circle of people: its own trips, people, categories and acces
 
 Trips → **Categories**: add, rename, reorder (↑ ↓) and delete expense categories. They're shared by all of the group's trips. Renaming updates expenses that used the old name; deleting leaves past expenses labeled as they were. Receipt scans choose from this list. The starting list is Lodging, Food, Transport, Activities, Groceries, Yacht charter, Boat expenses, Other.
 
+## Splitting a cost
+
+*How is it split?* on Add expense offers four ways. Each trip has a **default split** (trip → Edit), and any expense can use a different one.
+
+- **Equally**: the same share for everyone sharing it.
+- **By people**: in proportion to each family's number of people (e.g. 4 : 3 : 3).
+- **By cabins**: in proportion to the cabins each family uses (e.g. 2 : 1 : 1).
+- **Exact**: type each share.
+
+Set each family's **people** and **cabins** under **trip → Edit → People and cabins per family**. On an expense split by people or cabins, the numbers are filled in from the trip and can be changed for that expense only (say the Smiths bring a guest one night). Each expense keeps the numbers it used, so later changes to the trip don't alter past expenses. Shares always add up to the exact total; leftover cents go to the largest remainders.
+
 ## How the math works
 
 - **Spent:** what a person paid out of pocket on this trip.

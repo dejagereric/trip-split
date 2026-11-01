@@ -43,3 +43,13 @@ const cs = convertShares({ A: 3333, B: 3333, C: 3334 }, 1.1237, convert(10000, 1
 assert.equal(Object.values(cs).reduce((a, b) => a + b, 0), 11237);
 assert.deepEqual(convertShares({ A: 5000 }, 0.5, 2500), { A: 2500 });
 console.log('currency tests passed');
+
+// proportional split
+import { splitWeighted } from '../js/logic.js';
+assert.deepEqual(splitWeighted(100000, { A: 4, B: 3, C: 3 }, ['A', 'B', 'C']), { A: 40000, B: 30000, C: 30000 });
+const sw = splitWeighted(1000, { A: 2, B: 1, C: 1 }, ['A', 'B', 'C']);
+assert.deepEqual(sw, { A: 500, B: 250, C: 250 });
+const odd = splitWeighted(1001, { A: 1, B: 1, C: 1 }, ['A', 'B', 'C']);
+assert.equal(odd.A + odd.B + odd.C, 1001);
+assert.deepEqual(splitWeighted(999, { A: 3, B: 0 }, ['A', 'B']), { A: 999, B: 0 });
+console.log('proportional tests passed');

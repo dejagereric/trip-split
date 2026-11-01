@@ -103,8 +103,8 @@ async function cloudStore(config) {
   let groupId = '';
   const signed = new Map(); // receipt path -> { url, at }
 
-  const tripRow = (t) => ({ id: t.id, group_id: groupId, name: t.name, currency: t.currency, currencies: t.currencies || [t.currency], start_on: t.start || null, end_on: t.end || null, member_ids: t.members || [], created_at: t.createdAt });
-  const tripFrom = (r) => ({ id: r.id, name: r.name, currency: r.currency, currencies: Array.isArray(r.currencies) ? r.currencies : null, start: r.start_on || '', end: r.end_on || '', members: r.member_ids || [], createdAt: r.created_at });
+  const tripRow = (t) => ({ id: t.id, group_id: groupId, name: t.name, currency: t.currency, currencies: t.currencies || [t.currency], weights: t.weights || {}, default_split: t.defaultSplit || 'equal', start_on: t.start || null, end_on: t.end || null, member_ids: t.members || [], created_at: t.createdAt });
+  const tripFrom = (r) => ({ id: r.id, name: r.name, currency: r.currency, currencies: Array.isArray(r.currencies) ? r.currencies : null, weights: r.weights || {}, defaultSplit: r.default_split || 'equal', start: r.start_on || '', end: r.end_on || '', members: r.member_ids || [], createdAt: r.created_at });
   const partyRow = (p) => ({ id: p.id, group_id: groupId, name: p.name, phone: p.phone || null, email: p.email || null, color: p.color ?? 0, created_at: p.createdAt });
   const partyFrom = (r) => ({ id: r.id, name: r.name, phone: r.phone || '', email: r.email || '', color: r.color ?? 0, createdAt: r.created_at });
   const entryRow = (e) => ({
@@ -112,13 +112,13 @@ async function cloudStore(config) {
     description: e.desc ?? null, category: e.cat ?? null, spent_on: e.date, amount_cents: e.amount,
     payer: e.payer ?? null, shares: e.shares ?? {}, split_mode: e.mode ?? null,
     from_party: e.from ?? null, to_party: e.to ?? null, receipt_path: e.receipt || null, created_at: e.createdAt,
-    orig_amount_cents: e.origAmount ?? null, orig_currency: e.origCurrency ?? null, fx_rate: e.fxRate ?? null, fx_date: e.fxDate || null,
+    split_weights: e.splitWeights || null, orig_amount_cents: e.origAmount ?? null, orig_currency: e.origCurrency ?? null, fx_rate: e.fxRate ?? null, fx_date: e.fxDate || null,
   });
   const entryFrom = (r) => ({
     id: r.id, tripId: r.trip_id, kind: r.kind, desc: r.description ?? '', cat: r.category ?? 'Other',
     date: r.spent_on, amount: r.amount_cents, payer: r.payer, shares: r.shares || {}, mode: r.split_mode,
     from: r.from_party, to: r.to_party, receipt: r.receipt_path || '', createdAt: r.created_at, createdBy: r.created_by_email || '',
-    origAmount: r.orig_amount_cents ?? null, origCurrency: r.orig_currency || null, fxRate: r.fx_rate != null ? Number(r.fx_rate) : null, fxDate: r.fx_date || null,
+    splitWeights: r.split_weights || null, origAmount: r.orig_amount_cents ?? null, origCurrency: r.orig_currency || null, fxRate: r.fx_rate != null ? Number(r.fx_rate) : null, fxDate: r.fx_date || null,
   });
 
   return {

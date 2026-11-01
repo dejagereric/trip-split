@@ -212,6 +212,16 @@ alter table public.trips alter column currency set default 'USD';
 -- Currencies the trip expects to spend in, in the order to offer them (USD and EUR first by default).
 alter table public.trips add column if not exists currencies jsonb not null default '["USD","EUR"]'::jsonb;
 
+-- Proportional splits. A trip keeps each party's (family's) weights for two bases,
+-- e.g. {"people": {"<party id>": 4, ...}, "cabins": {"<party id>": 2, ...}}, and a default split.
+alter table public.trips
+  add column if not exists weights jsonb not null default '{}'::jsonb,
+  add column if not exists default_split text not null default 'equal';
+alter table public.trips drop constraint if exists trips_default_split_check;
+alter table public.trips add constraint trips_default_split_check check (default_split in ('equal', 'people', 'cabins', 'exact'));
+-- The weights actually used for an expense split by people or cabins.
+alter table public.entries add column if not exists split_weights jsonb;
+
 create index if not exists parties_group_idx on public.parties (group_id);
 create index if not exists trips_group_idx   on public.trips (group_id);
 create index if not exists entries_trip_idx  on public.entries (trip_id, created_at);

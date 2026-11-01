@@ -1,5 +1,5 @@
 import { CONFIG } from './config.js';
-import { cents, splitEqual, computeBalances, minimalTransfers, convert, convertShares } from './logic.js';
+import { cents, splitEqual, splitWeighted, computeBalances, minimalTransfers, convert, convertShares } from './logic.js';
 import { createStore, DEFAULT_CATEGORIES } from './store.js';
 import { buildTables, downloadCsv, preloadGoogle, exportToGoogle } from './export.js';
 
@@ -82,7 +82,7 @@ const pref = {
 };
 
 // ---------- state ----------
-const blankForm = () => ({ amt: '', desc: '', date: todayISO(), cat: 'Food', payer: '', excl: {}, mode: 'equal', custom: {}, cur: '', rate: '', rateFor: '', rateDate: '', rateManual: false, curOpen: false });
+const blankForm = () => ({ amt: '', desc: '', date: todayISO(), cat: 'Food', payer: '', excl: {}, mode: '', custom: {}, w: {}, wFor: '', cur: '', rate: '', rateFor: '', rateDate: '', rateManual: false, curOpen: false });
 const blankReceipt = () => ({ status: 'idle', blobUrl: '', ref: '', note: '' });
 
 const state = {
@@ -180,8 +180,14 @@ function evalForm() {
   const inc = members.filter((id) => !fm.excl[id]);
   let shares = {};
   let origShares = {};
-  if (fm.mode === 'equal') shares = splitEqual(amt, inc);
-  else {
+  const mode = fm.mode || tripDefaultSplit();
+  let weights = null;
+  if (mode === 'equal') shares = splitEqual(amt, inc);
+  else if (mode === 'people' || mode === 'cabins') {
+    if (fm.wFor !== mode) fillWeights(fm, mode);
+    weights = Object.fromEntries(inc.map((id) => [id, numW(fm.w[id])]));
+    shares = splitWeighted(amt, weights, inc);
+  } else {
     inc.forEach((id) => { origShares[id] = cents(fm.custom[id]); });
     shares = hasRate ? convertShares(origShares, rate, amt) : {};
   }
@@ -193,11 +199,12 @@ function evalForm() {
   else if (!origAmt) msg = 'Enter an amount.';
   else if (!hasRate) msg = state.fxBusy ? `Getting the ${cur} → ${CUR} rate…` : `Enter the ${cur} → ${CUR} exchange rate.`;
   else if (!inc.length) msg = 'Choose at least one person to share this cost.';
-  else if (fm.mode === 'exact' && assigned !== origAmt) msg = assigned < origAmt ? `${money(origAmt - assigned, cur)} of ${money(origAmt, cur)} still to assign` : `${money(assigned - origAmt, cur)} more than the total`;
+  else if (weights && !Object.values(weights).some((x) => x > 0)) msg = `Give at least one sharer more than 0 ${BASIS_LABEL[mode]}.`;
+  else if (mode === 'exact' && assigned !== origAmt) msg = assigned < origAmt ? `${money(origAmt - assigned, cur)} of ${money(origAmt, cur)} still to assign` : `${money(assigned - origAmt, cur)} more than the total`;
   else if (!fm.desc.trim()) msg = 'Add a short description.';
   else if (!/^\d{4}-\d{2}-\d{2}$/.test(fm.date)) msg = 'Pick a date.';
   else { valid = true; msg = `Ready. ${nameOf(fm.payer)} paid; ${inc.length === members.length && members.length > 1 ? 'shared by everyone' : 'shared by ' + joinNames(inc)}.`; }
-  return { amt, origAmt, cur, foreign, rate: foreign ? rate : 1, hasRate, inc, shares, valid, msg };
+  return { amt, origAmt, cur, foreign, rate: foreign ? rate : 1, hasRate, inc, shares, valid, msg, mode, weights };
 }
 
 // ---------- rendering ----------
@@ -414,6 +421,19 @@ function tripEditHtml() {
       <div class="wrap">${Array.from(new Set([...COMMON_CURRENCIES, ...f.currencies])).map((c) => chip(esc(c), 'tripCur', { c }, f.currencies.includes(c) || c === f.currency, `aria-label="${esc(curName(c))}"`)).join('')}</div>
       <select data-action-change="tripCurAdd" aria-label="Add another currency"><option value="">Add another…</option>${ALL_CURRENCIES.filter((c) => !COMMON_CURRENCIES.includes(c) && !f.currencies.includes(c)).map((c) => `<option value="${c}">${c} · ${esc(curName(c))}</option>`).join('')}</select>
     </div>
+    <div class="field"><span class="lbl">Default split</span>
+      <span class="small muted">New expenses on this trip start with this. You can change it on any expense.</span>
+      <div class="seg seg4">${SPLIT_MODES.map(([m, label]) => `<button type="button" class="${f.defaultSplit === m ? 'on' : ''}" data-action="tripSplit" data-mode="${m}" aria-pressed="${f.defaultSplit === m}">${label}</button>`).join('')}</div>
+    </div>
+    ${members.length ? `<div class="field"><span class="lbl">People and cabins per family</span>
+      <span class="small muted">Used by the “By people” and “By cabins” splits.</span>
+      <div class="card tight">
+        <div class="weights-head"><span></span><span>People</span><span>Cabins</span></div>
+        ${members.map((id) => `<div class="weights-row">${av(id, 'sm')}<span class="strong ellipsis">${esc(nameOf(id))}</span>
+          <input data-tw="people" data-id="${esc(id)}" type="text" inputmode="numeric" aria-label="People in ${esc(nameOf(id))}’s family" placeholder="–" value="${esc(f.weights.people[id] ?? '')}">
+          <input data-tw="cabins" data-id="${esc(id)}" type="text" inputmode="numeric" aria-label="Cabins used by ${esc(nameOf(id))}’s family" placeholder="–" value="${esc(f.weights.cabins[id] ?? '')}"></div>`).join('')}
+      </div>
+    </div>` : `<p class="small muted note">Once families are on this trip (added through expenses), set their people and cabins here.</p>`}
     <button type="button" class="btn primary big" data-action="saveTrip">${trip ? 'Save trip' : 'Create trip'}</button>
 
     ${trip ? `<h2>Frequent participants</h2>
@@ -664,7 +684,7 @@ function rowSub(e) {
   const sharers = Object.keys(e.shares || {}).filter((id) => e.shares[id] > 0);
   const all = tripIds();
   const everyone = sharers.length === all.length && all.length > 2;
-  return `Paid by ${nameOf(e.payer)} · ${everyone ? 'split by everyone' : 'split by ' + joinNames(sharers)}${e.mode === 'exact' ? ' (custom)' : ''}`;
+  return `Paid by ${nameOf(e.payer)} · ${everyone ? 'split by everyone' : 'split by ' + joinNames(sharers)}${splitNote(e)}`;
 }
 // Amount as spent, plus the trip-currency figure when it was a different currency.
 function amountHtml(e) {
@@ -672,6 +692,14 @@ function amountHtml(e) {
     return `<span class="amt-stack"><span class="strong num">${money(e.origAmount, e.origCurrency)}</span><span class="small muted num">${money(e.amount)}</span></span>`;
   }
   return `<span class="strong num">${money(e.amount)}</span>`;
+}
+function splitNote(e) {
+  if (e.mode === 'exact') return ' (custom)';
+  if ((e.mode === 'people' || e.mode === 'cabins') && e.splitWeights?.weights) {
+    const ws = Object.keys(e.shares || {}).filter((id) => e.shares[id] > 0).map((id) => e.splitWeights.weights[id] ?? '?');
+    return ` (by ${BASIS_LABEL[e.mode]} ${ws.join('·')})`;
+  }
+  return '';
 }
 const rowTitle = (e) => (e.kind === 'payment' ? `${nameOf(e.from)} → ${nameOf(e.to)}` : e.desc);
 
@@ -723,6 +751,19 @@ function pickerHtml(forWhat) {
     ${members.length ? '<button type="button" class="link small" data-action="closePicker">Cancel</button>' : ''}
   </div>`;
 }
+
+// ----- split methods -----
+const SPLIT_MODES = [['equal', 'Equally'], ['people', 'By people'], ['cabins', 'By cabins'], ['exact', 'Exact']];
+const BASIS_LABEL = { people: 'people', cabins: 'cabins' };
+const tripDefaultSplit = (trip = curTrip()) => (trip && SPLIT_MODES.some(([m]) => m === trip.defaultSplit) ? trip.defaultSplit : 'equal');
+const tripWeight = (trip, basis, id) => { const v = trip?.weights?.[basis]?.[id]; return v == null || v === '' ? null : Number(v); };
+// Fill the expense's weights from the trip's numbers for this basis (missing ones count as 1).
+function fillWeights(fm, basis) {
+  const trip = curTrip();
+  fm.w = Object.fromEntries(formIds().map((id) => { const t = tripWeight(trip, basis, id); return [id, String(t == null ? 1 : t)]; }));
+  fm.wFor = basis;
+}
+const numW = (v) => { const n = Number(String(v ?? '').replace(',', '.')); return Number.isFinite(n) && n >= 0 ? n : 0; };
 
 function defaultCurrency() {
   const trip = curTrip();
@@ -783,6 +824,8 @@ function addHtml() {
   if (!state.editId && (!fm.payer || !members.includes(fm.payer))) fm.payer = myPartyId() || members[0] || '';
   // ...and to the last currency used on this trip (or the trip's own currency).
   if (!fm.cur) fm.cur = defaultCurrency();
+  if (!fm.mode) fm.mode = tripDefaultSplit();
+  if ((fm.mode === 'people' || fm.mode === 'cabins') && fm.wFor !== fm.mode) fillWeights(fm, fm.mode);
   const fmCur = fm.cur;
   ensureRate();
   const picker = state.picker || (!members.length ? 'payer' : null);
@@ -851,13 +894,19 @@ function addHtml() {
     </div>
 
     <div class="field"><span class="lbl">How is it split?</span>
-      <div class="seg">
-        <button type="button" class="${fm.mode === 'equal' ? 'on' : ''}" data-action="mode" data-mode="equal" aria-pressed="${fm.mode === 'equal'}">Equally</button>
-        <button type="button" class="${fm.mode === 'exact' ? 'on' : ''}" data-action="mode" data-mode="exact" aria-pressed="${fm.mode === 'exact'}">Exact amounts</button>
+      <div class="seg seg4">
+        ${SPLIT_MODES.map(([m, label]) => `<button type="button" class="${fm.mode === m ? 'on' : ''}" data-action="mode" data-mode="${m}" aria-pressed="${fm.mode === m}">${label}</button>`).join('')}
       </div>
+      ${fm.mode === tripDefaultSplit() ? '<span class="small muted">This trip’s default split.</span>' : `<span class="small muted">Trip default is ${esc(SPLIT_MODES.find(([m]) => m === tripDefaultSplit())[1].toLowerCase())}; changed for this expense only.</span>`}
     </div>` : ''}
 
     <div class="card tight">
+      ${(fm.mode === 'people' || fm.mode === 'cabins') ? members.filter((id) => !fm.excl[id]).map((id) => {
+        const t = tripWeight(curTrip(), fm.mode, id);
+        return `<div class="exact-row">${av(id, 'sm')}<span class="grow"><span class="strong">${esc(nameOf(id))}</span><span class="small muted share-out" data-share-id="${esc(id)}"></span></span>
+          <input data-field="w" data-id="${esc(id)}" type="text" inputmode="decimal" aria-label="${BASIS_LABEL[fm.mode]} for ${esc(nameOf(id))}" value="${esc(fm.w[id] ?? '')}" class="w-input">
+          <span class="small muted w-unit">${BASIS_LABEL[fm.mode]}${t == null ? '*' : ''}</span></div>`;
+      }).join('') + (members.some((id) => !fm.excl[id] && tripWeight(curTrip(), fm.mode, id) == null) ? `<p class="small muted pad-y">* Not set for this trip yet (counted as 1). Set families’ ${BASIS_LABEL[fm.mode]} in the trip’s settings.</p>` : '') : ''}
       ${fm.mode === 'exact' ? members.filter((id) => !fm.excl[id]).map((id) => `<div class="exact-row">${av(id, 'sm')}<span class="grow strong">${esc(nameOf(id))}</span><input data-field="custom" data-id="${esc(id)}" type="text" inputmode="decimal" aria-label="Amount for ${esc(nameOf(id))}" placeholder="0.00" value="${esc(fm.custom[id] || '')}"></div>`).join('') : ''}
       <p id="add-status" class="status" role="status"></p>
     </div>
@@ -870,6 +919,10 @@ function addHtml() {
 function updateAddLive() {
   const conv = $('#fx-conv'); if (conv) conv.textContent = fxConvText();
   const r = evalForm();
+  document.querySelectorAll('.share-out').forEach((el) => {
+    const id = el.dataset.shareId;
+    el.textContent = r.hasRate && r.amt ? money(r.shares[id] || 0) : '';
+  });
   const st = $('#add-status');
   if (st) { st.textContent = r.msg; st.classList.toggle('ok', r.valid); }
   const b = $('#save-btn');
@@ -1249,14 +1302,16 @@ const actions = {
 
   // trips
   selectTrip(d) { selectTrip(d.id); state.screen = 'balances'; render(); },
-  newTrip() { const c = toCode(CONFIG.defaultCurrency); state.tripForm = { id: null, name: '', start: '', end: '', currency: c, currencies: Array.from(new Set([c, 'USD', 'EUR'])) }; state.screen = 'tripEdit'; render(); },
+  newTrip() { const c = toCode(CONFIG.defaultCurrency); state.tripForm = { id: null, name: '', start: '', end: '', currency: c, currencies: Array.from(new Set([c, 'USD', 'EUR'])), defaultSplit: 'equal', weights: { people: {}, cabins: {} } }; state.screen = 'tripEdit'; render(); },
   editTrip(d) {
     const t = state.data.trips.find((x) => x.id === d.id);
     if (!t) return;
-    state.tripForm = { id: t.id, name: t.name, start: t.start || '', end: t.end || '', currency: toCode(t.currency), currencies: tripCurrencies(t) };
+    state.tripForm = { id: t.id, name: t.name, start: t.start || '', end: t.end || '', currency: toCode(t.currency), currencies: tripCurrencies(t), defaultSplit: tripDefaultSplit(t),
+      weights: { people: { ...(t.weights?.people || {}) }, cabins: { ...(t.weights?.cabins || {}) } } };
     state.screen = 'tripEdit';
     render();
   },
+  tripSplit(d) { state.tripForm.defaultSplit = d.mode; render(); },
   tripCur(d) {
     const f = state.tripForm;
     if (d.c === f.currency) return; // the trip currency is always offered
@@ -1276,8 +1331,11 @@ const actions = {
     if (f.start && f.end && f.end < f.start) { flash('The end date is before the start date.'); return; }
     const old = state.data.trips.find((t) => t.id === f.id);
     const currencies = Array.from(new Set([f.currency, ...f.currencies]));
-    const trip = old ? { ...old, name, start: f.start, end: f.end, currency: f.currency, currencies }
-      : { id: uuid(), name, start: f.start, end: f.end, currency: f.currency, currencies, members: myPartyId() ? [myPartyId()] : [], createdAt: new Date().toISOString() };
+    const cleanW = (o) => Object.fromEntries(Object.entries(o || {}).filter(([, v]) => String(v).trim() !== '').map(([k, v]) => [k, numW(v)]));
+    const weights = { people: cleanW(f.weights?.people), cabins: cleanW(f.weights?.cabins) };
+    const defaultSplit = f.defaultSplit || 'equal';
+    const trip = old ? { ...old, name, start: f.start, end: f.end, currency: f.currency, currencies, weights, defaultSplit }
+      : { id: uuid(), name, start: f.start, end: f.end, currency: f.currency, currencies, weights, defaultSplit, members: myPartyId() ? [myPartyId()] : [], createdAt: new Date().toISOString() };
     const before = snapshot();
     await commit(() => {
       replaceIn('trips', trip);
@@ -1372,6 +1430,7 @@ const actions = {
       const eq = splitEqual(cents(fm.amt), incl); // in the currency spent
       fm.custom = Object.fromEntries(incl.map((id) => [id, eq[id] ? (eq[id] / 100).toFixed(2) : '']));
     }
+    if ((d.mode === 'people' || d.mode === 'cabins') && fm.wFor !== d.mode) fillWeights(fm, d.mode);
     fm.mode = d.mode;
     render();
   },
@@ -1384,7 +1443,9 @@ const actions = {
       ...blankForm(),
       amt: ((e.origAmount ?? e.amount) / 100).toFixed(2), desc: e.desc, date: e.date, cat: e.cat, payer: e.payer,
       excl: Object.fromEntries(members.filter((id) => !(e.shares[id] > 0)).map((id) => [id, true])),
-      mode: e.mode === 'exact' ? 'exact' : 'equal',
+      mode: SPLIT_MODES.some(([m]) => m === e.mode) ? e.mode : 'equal',
+      w: e.splitWeights && e.splitWeights.weights ? Object.fromEntries(Object.entries(e.splitWeights.weights).map(([k, v]) => [k, String(v)])) : {},
+      wFor: e.splitWeights && e.splitWeights.weights ? e.mode : '',
       // Exact shares were stored converted; show them back in the currency spent.
       custom: Object.fromEntries(Object.entries(e.shares).map(([id, c]) => [id, (c / (e.fxRate || 1) / 100).toFixed(2)])),
       cur: e.origCurrency || CUR,
@@ -1409,7 +1470,8 @@ const actions = {
     const entry = {
       ...(old || { id: uuid(), createdAt: new Date().toISOString() }),
       tripId: state.tripId, kind: 'expense', desc: fm.desc.trim(), cat: fm.cat, date: fm.date,
-      amount: r.amt, payer: fm.payer, shares, mode: fm.mode, receipt: state.receipt.ref || '',
+      amount: r.amt, payer: fm.payer, shares, mode: r.mode, receipt: state.receipt.ref || '',
+      splitWeights: r.weights ? { basis: r.mode, weights: r.weights } : null,
       origAmount: r.foreign ? r.origAmt : null, origCurrency: r.foreign ? r.cur : null,
       fxRate: r.foreign ? r.rate : null, fxDate: r.foreign ? (fm.rateManual ? fm.date : fm.rateDate || fm.date) : null,
     };
@@ -1846,6 +1908,7 @@ document.addEventListener('input', (ev) => {
   const ds = el.dataset || {};
   if (ds.field) {
     if (ds.field === 'custom') state.form.custom[ds.id] = el.value;
+    else if (ds.field === 'w') state.form.w[ds.id] = el.value;
     else state.form[ds.field] = el.value;
     if (ds.field === 'rate') { state.form.rateManual = true; const n = $('#fx-note'); if (n) n.textContent = fxNote(); }
     if (ds.field === 'date') ensureRate();
@@ -1854,6 +1917,7 @@ document.addEventListener('input', (ev) => {
   else if (ds.auth) state[ds.auth] = el.value;
   else if (ds.nm) state.newMember = el.value;
   else if (ds.tf && state.tripForm) state.tripForm[ds.tf] = el.value;
+  else if (ds.tw && state.tripForm) state.tripForm.weights[ds.tw][ds.id] = el.value.replace(/[^0-9.]/g, '');
   else if (ds.pf && state.personForm) state.personForm[ds.pf] = el.value;
   else if (ds.mf && state.meForm) state.meForm[ds.mf] = el.value;
   else if (ds.newcat) state.newCat = el.value;

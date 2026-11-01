@@ -233,3 +233,14 @@ select { height: 48px; border: 1px solid var(--control); border-radius: 12px; ba
 .invite-card { border-color: var(--ink); }
 .invite-box { display: flex; flex-direction: column; gap: 12px; }
 .invite-box .row-btns .btn { flex: 1 1 140px; }
+
+/* proportional splits */
+.w-input { width: 72px; height: 40px; border: 1px solid var(--control); border-radius: 10px; padding: 0 10px; text-align: right; font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.w-unit { width: 48px; }
+.weights-head, .weights-row { display: grid; grid-template-columns: 24px minmax(0, 1fr) 72px 72px; gap: 10px; align-items: center; }
+.weights-head { grid-template-columns: minmax(0, 1fr) 72px 72px; padding: 10px 0 4px; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.weights-head span:not(:first-child) { text-align: center; }
+.weights-row { min-height: 56px; border-bottom: 1px solid var(--ground); }
+.weights-row:last-child { border-bottom: 0; }
+.weights-row input { width: 72px; height: 40px; border: 1px solid var(--control); border-radius: 10px; text-align: center; font-size: 16px; font-weight: 600; }
+.seg.seg4 button { font-size: 14px; padding: 0 2px; }

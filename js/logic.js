@@ -74,3 +74,20 @@ export function convertShares(origShares, rate, convTotal) {
   }
   return out;
 }
+
+// ---------- proportional split ----------
+// Split `total` cents across `ids` in proportion to `weights` ({id: number}); shares add up
+// exactly to `total` (largest remainders get the leftover cents). Ids with weight 0 get 0.
+export function splitWeighted(total, weights, ids) {
+  const w = ids.map((id) => Math.max(0, Number(weights[id]) || 0));
+  const sum = w.reduce((a, b) => a + b, 0);
+  const out = {};
+  if (!sum) { ids.forEach((id) => { out[id] = 0; }); return out; }
+  const exact = w.map((x) => (total * x) / sum);
+  const base = exact.map(Math.floor);
+  let left = total - base.reduce((a, b) => a + b, 0);
+  const order = exact.map((x, i) => [x - base[i], i]).sort((a, b) => b[0] - a[0] || a[1] - b[1]);
+  for (let k = 0; left > 0 && k < order.length; k++, left--) base[order[k][1]] += 1;
+  ids.forEach((id, i) => { out[id] = base[i]; });
+  return out;
+}

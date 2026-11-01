@@ -6,13 +6,20 @@ const GSI_SRC = 'https://accounts.google.com/gsi/client';
 const SCOPE = 'https://www.googleapis.com/auth/drive.file';
 
 // ---------- tables ----------
+function splitLabel(e, sharers) {
+  if (e.mode === 'exact') return 'Exact amounts';
+  if ((e.mode === 'people' || e.mode === 'cabins') && e.splitWeights?.weights) {
+    return `By ${e.mode} (${sharers.map((id) => e.splitWeights.weights[id] ?? '?').join(':')})`;
+  }
+  return 'Equally';
+}
 // ctx: { trip, entries (sorted), ids, nameOf, calc, transfers, cur, addedBy }
 export function buildTables(ctx) {
   const { trip, entries, ids, nameOf, calc, transfers, cur, addedBy } = ctx;
   const n = (c) => (c == null ? '' : Math.round(c) / 100);
   const people = ids.map(nameOf);
 
-  const ledgerHead = ['Date', 'Description', 'Category', 'Type', 'Paid by', 'Amount spent', 'Currency spent', 'Rate', `Amount (${cur})`, 'Shared by',
+  const ledgerHead = ['Date', 'Description', 'Category', 'Type', 'Paid by', 'Amount spent', 'Currency spent', 'Rate', `Amount (${cur})`, 'Shared by', 'Split',
     ...people.map((p) => `${p} share (${cur})`), 'Added by', 'Receipt'];
   const ledgerRows = entries.map((e) => {
     const isPay = e.kind === 'payment';
@@ -29,6 +36,7 @@ export function buildTables(ctx) {
       foreign ? Number(e.fxRate) : 1,
       n(e.amount),
       isPay ? nameOf(e.to) : sharers.map(nameOf).join(', '),
+      isPay ? '' : splitLabel(e, sharers),
       ...ids.map((id) => (isPay ? '' : (e.shares[id] ? n(e.shares[id]) : ''))),
       e.createdBy ? addedBy(e.createdBy) : '',
       e.receipt ? 'Yes' : '',
