@@ -298,12 +298,20 @@ function focusAuth() {
 
 const syncLabel = () => (store ? (store.mode === 'cloud' ? (state.groups.find((g) => g.id === store.groupId)?.name || 'Synced') : 'On this phone only') : '');
 
+// Top-right: group name and the signed-in person's profile button (shown once signed in).
+function topRightHtml() {
+  const showProfile = store?.mode === 'cloud' && state.auth === 'ready' && state.screen !== 'me';
+  const me = partyById(myPartyId());
+  return `<span class="top-right"><span class="sync ellipsis">${esc(syncLabel())}</span>${showProfile
+    ? `<button type="button" class="profile-btn" data-action="openProfile" aria-label="Your profile">${me ? av(me.id, 'md') : `<span class="av av-md profile-blank" aria-hidden="true">${ICON.contacts}</span>`}</button>` : ''}</span>`;
+}
+
 function tripHeaderHtml(trip, calc) {
   const ids = tripIds(trip);
   return `<header class="top">
     <div class="top-row">
       <button type="button" class="trip-switch" data-action="go" data-screen="trips" aria-label="Switch trip, current trip ${esc(trip?.name || '')}"><span class="ellipsis">${esc(trip?.name || 'Trips')}</span>${ICON.chevron}</button>
-      <span class="sync">${esc(syncLabel())}</span>
+      ${topRightHtml()}
     </div>
     <h1>${state.screen === 'add' && state.editId ? 'Edit expense' : TITLES[state.screen]}</h1>
     ${calc && ids.length ? `<div class="tally" aria-label="Total spent per person">
@@ -314,14 +322,17 @@ function tripHeaderHtml(trip, calc) {
 
 function manageHeaderHtml(trip) {
   const inList = MANAGE_LISTS.includes(state.screen);
-  const back = state.screen === 'me' ? '<span></span>' : inList
+  const back = state.screen === 'me'
+    ? (state.meMode === 'edit' ? `<button type="button" class="back" data-action="closeProfile">${ICON.back}Back</button>` : '<span></span>')
+    : inList
     ? (trip ? `<button type="button" class="back" data-action="go" data-screen="balances">${ICON.back}<span class="ellipsis">${esc(trip.name)}</span></button>` : '<span></span>')
     : `<button type="button" class="back" data-action="go" data-screen="${state.screen === 'tripEdit' ? 'trips' : 'people'}">${ICON.back}${state.screen === 'tripEdit' ? 'Trips' : 'People'}</button>`;
   const title = state.screen === 'tripEdit' ? (state.tripForm?.id ? 'Edit trip' : 'New trip')
     : state.screen === 'personEdit' ? (state.personForm?.id ? 'Edit person' : 'New person')
+    : state.screen === 'me' && state.meMode === 'edit' ? 'Your profile'
     : TITLES[state.screen];
   return `<header class="top">
-    <div class="top-row">${back}<span class="sync">${esc(syncLabel())}</span></div>
+    <div class="top-row">${back}${topRightHtml()}</div>
     <h1>${title}</h1>
     ${inList ? `<div class="seg${store?.mode === 'cloud' ? ' seg4' : ' seg3'}" role="group" aria-label="Manage">
       <button type="button" class="${state.screen === 'trips' ? 'on' : ''}" data-action="go" data-screen="trips" aria-pressed="${state.screen === 'trips'}">Trips</button>
@@ -510,7 +521,9 @@ function meHtml() {
   const f = state.meForm || { name: '', phone: '' };
   const unlinked = state.data.parties.filter((p) => !(p.email || '').trim());
   return `<div class="stack gap-lg">
-    <p class="lead">So your group knows who you are. You’ll be added to expenses you enter, and you can take yourself off any of them.</p>
+    ${state.meMode === 'edit'
+      ? `<p class="lead">Your details in “${esc(state.groups.find((g) => g.id === store.groupId)?.name || 'this group')}”. Others see your name, and your payment apps when settling up.</p>`
+      : '<p class="lead">So your group knows who you are. You’ll be added to expenses you enter, and you can take yourself off any of them.</p>'}
     ${CAN_PICK_CONTACTS ? `<button type="button" class="btn" data-action="meFromContacts">${ICON.contacts}Fill in from my contact card</button>` : ''}
     <label class="field"><span class="lbl">Your name</span><input data-mf="name" type="text" maxlength="60" autocomplete="name" autocapitalize="words" placeholder="e.g. Eric de Jager" value="${esc(f.name)}"></label>
     <label class="field"><span class="lbl">Your phone</span><input data-mf="phone" type="tel" autocomplete="tel" placeholder="Optional" value="${esc(f.phone)}"></label>
@@ -520,7 +533,10 @@ function meHtml() {
     ${unlinked.length && !myPartyId() ? `<div class="field"><span class="lbl">Already on the list under another entry?</span>
       <div class="wrap">${unlinked.map((p) => chip(av(p.id, 'sm') + 'That’s me: ' + esc(p.name), 'claimParty', { id: p.id }, false)).join('')}</div></div>` : ''}
     <button type="button" class="btn primary big" data-action="saveMe">Save</button>
-    <button type="button" class="link center" data-action="skipMe">Skip for now</button>
+    ${state.meMode === 'edit'
+      ? `<button type="button" class="link center" data-action="closeProfile">Cancel</button>
+         <div class="card"><span class="lbl">Signed in as</span><span class="strong">${esc(myEmail())}</span><button type="button" class="btn" data-action="signOut">Sign out</button></div>`
+      : '<button type="button" class="link center" data-action="skipMe">Skip for now</button>'}
   </div>`;
 }
 
@@ -531,11 +547,14 @@ function needsMe() {
   if (!me) return true;
   return !me.phone && !pref.get('askedDetails:' + store.groupId);
 }
-function openMe() {
+function openMe(mode = 'setup') {
   const me = partyById(myPartyId());
   state.meForm = { name: me?.name || '', phone: me?.phone || '', pay: { ...(me?.payment || {}) } };
+  if (mode === 'edit' && state.screen !== 'me') state.prevScreen = state.screen;
+  state.meMode = mode;
   state.screen = 'me';
 }
+const backFromProfile = () => (state.meMode === 'edit' && state.prevScreen ? state.prevScreen : (curTrip() ? 'balances' : 'trips'));
 
 // ----- categories (shared by the group's trips) -----
 const sortedCats = () => state.data.categories.slice().sort((a, b) => (a.sort - b.sort) || a.name.localeCompare(b.name));
@@ -1658,6 +1677,10 @@ const actions = {
     render();
   },
 
+  // your profile (top-right button)
+  openProfile() { openMe('edit'); render(); const m = $('#main'); if (m) m.scrollTop = 0; },
+  closeProfile() { state.screen = backFromProfile(); state.meMode = 'setup'; render(); },
+
   // your details
   async meFromContacts() {
     const c = await chooseContact();
@@ -1683,7 +1706,7 @@ const actions = {
     pref.set('askedDetails:' + store.groupId, '1');
     const before = snapshot();
     state.claimId = null;
-    await commit(() => { replaceIn('parties', p); state.screen = curTrip() ? 'balances' : 'trips'; state.form = blankForm(); },
+    await commit(() => { replaceIn('parties', p); state.screen = backFromProfile(); state.meMode = 'setup'; if (!state.editId) state.form = blankForm(); },
       () => store.saveParty(p), () => { state.data = before; }, `Thanks, ${name.split(' ')[0]}`);
   },
   async skipMe() {

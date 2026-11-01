@@ -23,6 +23,7 @@ _Last updated: October 26, 2026_
 - **Invitations (Oct 26):** `invitations` table (admin-only RLS), `invite_preview` (pre-sign-in), `accept_invite` (joins with role, links the person's card), and the `hook_invite_only_signup` auth hook function. Sent from a person card or Access by email, text or share; links work once and expire in 30 days. Tested in the live database (rolled back) and end to end in the app with a stand-in backend.
 - **Proportional splits (Nov 1):** splits are Equally / By people / By cabins / Exact. Trips store `weights` ({people:{party:n}, cabins:{party:n}}) and `default_split`; entries store `split_weights` ({basis, weights}) as used. Set under trip → Edit; override per expense. Intended use: three families sharing a boat.
 - **Get paid back (Nov 1):** `parties.payment` jsonb (venmo, paypal, cashapp, revolut, zelle, other, preferred), edited on the person card and Your details (RLS: own record or admin). Settle up shows pay-app buttons per payee; reminders and the summary include links (toggle). `js/payments.js` builds the links; no money handling.
+- **Profile button (Nov 1):** initials at the top right of every signed-in screen open Your profile (the Your details screen in edit mode: name, phone, payment apps, Sign out), returning to the previous screen.
 - **Layout:** the app is pinned to the visible screen (fixed position), which fixes the tab bar dropping below the screen on Android.
 
 ## Next: custom domain `trips.ericdejager.com`

@@ -177,6 +177,10 @@ Trips → **Categories**: add, rename, reorder (↑ ↓) and delete expense cate
 
 Set each family's **people** and **cabins** under **trip → Edit → People and cabins per family**. On an expense split by people or cabins, the numbers are filled in from the trip and can be changed for that expense only (say the Smiths bring a guest one night). Each expense keeps the numbers it used, so later changes to the trip don't alter past expenses. Shares always add up to the exact total; leftover cents go to the largest remainders.
 
+## Your profile
+
+The round button with your initials, at the top right of every screen, opens **Your profile**: your name, phone, and how you'd like to be paid back (Venmo, PayPal, etc.), plus Sign out. Save or Back returns you to where you were. Your profile belongs to the current group; if you're in several groups, set it in each.
+
 ## Getting paid back
 
 Each person's profile (People → person, or Your details) has a **Get paid back** section: Venmo, PayPal, Cash App, Revolut, Zelle, or any other link, plus which one they prefer. Pasting a profile address (e.g. `paypal.me/name`) is fine; just the name is kept.
