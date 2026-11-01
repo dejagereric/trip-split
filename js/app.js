@@ -2110,7 +2110,27 @@ async function boot() {
   render();
 }
 
+// When a new version is deployed, show a small banner offering to refresh.
+function showUpdateBanner() {
+  if (document.getElementById('update-banner')) return;
+  const el = document.createElement('div');
+  el.id = 'update-banner';
+  el.setAttribute('role', 'status');
+  el.innerHTML = '<span>A new version of Trip Split is ready.</span><button type="button">Refresh</button>';
+  el.querySelector('button').addEventListener('click', () => window.location.reload());
+  document.body.appendChild(el);
+}
 if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => { navigator.serviceWorker.register('./sw.js').catch(() => {}); });
+  window.addEventListener('load', async () => {
+    try {
+      const hadController = !!navigator.serviceWorker.controller; // false on the very first visit: nothing to update
+      const reg = await navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' });
+      navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController) showUpdateBanner(); });
+      const check = () => reg.update().catch(() => {});
+      // Phones keep installed apps alive in the background, so check whenever the app comes back to the front.
+      document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') check(); });
+      setInterval(check, 30 * 60 * 1000);
+    } catch { /* offline or unsupported: the app still works */ }
+  });
 }
 boot();
