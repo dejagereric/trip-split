@@ -24,6 +24,7 @@ _Last updated: October 26, 2026_
 - **Proportional splits (Nov 1):** splits are Equally / By people / By cabins / Exact. Trips store `weights` ({people:{party:n}, cabins:{party:n}}) and `default_split`; entries store `split_weights` ({basis, weights}) as used. Set under trip → Edit; override per expense. Intended use: three families sharing a boat.
 - **Get paid back (Nov 1):** `parties.payment` jsonb (venmo, paypal, cashapp, revolut, zelle, other, preferred), edited on the person card and Your details (RLS: own record or admin). Settle up shows pay-app buttons per payee; reminders and the summary include links (toggle). `js/payments.js` builds the links; no money handling.
 - **Profile button (Nov 1):** initials at the top right of every signed-in screen open Your profile (the Your details screen in edit mode: name, phone, payment apps, Sign out), returning to the previous screen.
+- **Adding people to a trip (Nov 1 fix):** creating a trip now opens straight to “Who’s coming?” (add people, then Done → Balances). On any trip, Trips → Edit shows “Who’s on this trip” first, with an Add people button. A trip with only you shows Add people on Balances.
 - **Layout:** the app is pinned to the visible screen (fixed position), which fixes the tab bar dropping below the screen on Android.
 
 ## Next: custom domain `trips.ericdejager.com`

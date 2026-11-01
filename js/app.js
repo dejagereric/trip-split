@@ -418,7 +418,21 @@ function tripEditHtml() {
   const trip = state.data.trips.find((t) => t.id === f.id);
   const es = trip ? tripEntries(trip.id) : [];
   const members = trip ? tripIds(trip) : [];
+  // Who's on the trip comes first: it's what you set up right after creating a trip.
+  const peopleBlock = trip ? `<h2>Who’s on this trip</h2>
+      <p class="small muted note">Add people here, or on the fly from Add expense. Remove anyone added by mistake.</p>
+      <div class="card tight">
+        ${members.length ? members.map((id) => {
+          const n = usesIn(id, es);
+          return `<div class="list-row">${av(id, 'md')}<span class="grow"><span class="strong">${esc(nameOf(id))}${youTag(id)}</span><span class="small muted">${n ? 'On ' + plural(n, 'entry', 'entries') + ' — edit those first to remove' : 'Not on any expenses'}</span></span>
+            <button type="button" class="btn small-btn" data-action="removeMember" data-id="${esc(id)}" ${n ? 'disabled' : ''} aria-label="Remove ${esc(nameOf(id))} from this trip">Remove</button></div>`;
+        }).join('') : '<p class="small muted pad-y">No one yet.</p>'}
+      </div>
+      ${state.picker === 'trip' ? pickerHtml('trip') : `<button type="button" class="btn primary" data-action="openPicker" data-for="trip">${ICON.plus}Add people</button>`}
+      <h2>Trip settings</h2>` : '';
   return `<div class="stack gap-lg">
+    ${trip && state.tripJustCreated ? `<div class="card invite-card"><span class="strong">${esc(trip.name)} is ready.</span><span class="muted">Add who’s coming, then tap Done. You can always add people later, here or from Add expense.</span></div>` : ''}
+    ${peopleBlock}
     <label class="field"><span class="lbl">Trip name</span><input data-tf="name" type="text" maxlength="60" placeholder="e.g. Lisbon, October" value="${esc(f.name)}"></label>
     <div class="grid2">
       <label class="field"><span class="lbl">Starts</span><input data-tf="start" type="date" value="${esc(f.start)}"></label>
@@ -446,19 +460,9 @@ function tripEditHtml() {
           <input data-tw="people" data-id="${esc(id)}" type="text" inputmode="numeric" aria-label="People in ${esc(nameOf(id))}’s family" placeholder="–" value="${esc(f.weights.people[id] ?? '')}">
           <input data-tw="cabins" data-id="${esc(id)}" type="text" inputmode="numeric" aria-label="Cabins used by ${esc(nameOf(id))}’s family" placeholder="–" value="${esc(f.weights.cabins[id] ?? '')}"></div>`).join('')}
       </div>
-    </div>` : `<p class="small muted note">Once families are on this trip (added through expenses), set their people and cabins here.</p>`}
-    <button type="button" class="btn primary big" data-action="saveTrip">${trip ? 'Save trip' : 'Create trip'}</button>
-
-    ${trip ? `<h2>Frequent participants</h2>
-      <p class="small muted note">People join a trip automatically when you add them to one of its expenses. Remove anyone added by mistake.</p>
-      <div class="card tight">
-        ${members.length ? members.map((id) => {
-          const n = usesIn(id, es);
-          return `<div class="list-row">${av(id, 'md')}<span class="grow"><span class="strong">${esc(nameOf(id))}</span><span class="small muted">${n ? 'On ' + plural(n, 'entry', 'entries') + ' — edit those first to remove' : 'Not on any expenses'}</span></span>
-            <button type="button" class="btn small-btn" data-action="removeMember" data-id="${esc(id)}" ${n ? 'disabled' : ''} aria-label="Remove ${esc(nameOf(id))} from this trip">Remove</button></div>`;
-        }).join('') : '<p class="small muted pad-y">No one yet. Add people from the Add expense screen.</p>'}
-      </div>
-      <button type="button" class="btn danger" data-action="deleteTrip" data-id="${esc(trip.id)}">Delete trip${es.length ? ' and its ' + plural(es.length, 'entry', 'entries') : ''}</button>` : ''}
+    </div>` : (trip ? '<p class="small muted note">Once people are on this trip, set each family’s people and cabins here.</p>' : '')}
+    <button type="button" class="btn primary big" data-action="saveTrip">${trip ? 'Save trip settings' : 'Create trip'}</button>
+    ${trip ? `<button type="button" class="btn danger" data-action="deleteTrip" data-id="${esc(trip.id)}">Delete trip${es.length ? ' and its ' + plural(es.length, 'entry', 'entries') : ''}</button>` : ''}
   </div>`;
 }
 
@@ -746,8 +750,9 @@ function balancesHtml() {
   if (!es.length) {
     return `<div class="stack"><div class="card center">
       <p class="strong big">No expenses yet</p>
-      <p class="muted">Add the first one. Whoever you put on it joins this trip.</p>
-      <button class="btn primary" data-action="newExpense">Add first expense</button>
+      <p class="muted">${ids.length > 1 ? 'Add the first one.' : 'Add who’s coming, then the first expense.'}</p>
+      ${ids.length > 1 ? '' : `<button class="btn primary" data-action="addPeople">${ICON.plus}Add people</button>`}
+      <button class="btn ${ids.length > 1 ? 'primary' : ''}" data-action="newExpense">Add first expense</button>
     </div></div>`;
   }
   const calc = computeBalances(es, ids);
@@ -769,12 +774,15 @@ function balancesHtml() {
 }
 
 // ----- add / edit expense -----
+const editingTrip = () => state.data.trips.find((t) => t.id === state.tripForm?.id) || null;
+
 function pickerHtml(forWhat) {
-  const members = formIds();
+  const forTrip = forWhat === 'trip';
+  const members = forTrip ? tripIds(editingTrip()) : formIds();
   const others = state.data.parties.filter((p) => !members.includes(p.id)).sort((a, b) => a.name.localeCompare(b.name));
   const np = state.newPerson;
   return `<div class="card picker">
-    <span class="lbl">${forWhat === 'payer' ? 'Who paid? Add them to this trip' : 'Add someone to this trip'}</span>
+    <span class="lbl">${forTrip ? 'Who’s coming? Tap people you’ve traveled with, or add someone new' : forWhat === 'payer' ? 'Who paid? Add them to this trip' : 'Add someone to this trip'}</span>
     ${others.length ? `<div class="wrap">${others.map((p) => chip(av(p.id, 'sm') + esc(p.name), 'pickPerson', { id: p.id }, false)).join('')}</div>` : ''}
     ${CAN_PICK_CONTACTS ? `<button type="button" class="btn" data-action="pickContact">${ICON.contacts}Choose from contacts</button>` : ''}
     <div class="newperson">
@@ -785,7 +793,8 @@ function pickerHtml(forWhat) {
       </div>
       <button type="button" class="btn primary" data-action="createPerson">Add to trip</button>
     </div>
-    ${members.length ? '<button type="button" class="link small" data-action="closePicker">Cancel</button>' : ''}
+    ${forTrip ? '<button type="button" class="btn" data-action="tripPeopleDone">Done</button>'
+      : members.length ? '<button type="button" class="link small" data-action="closePicker">Cancel</button>' : ''}
   </div>`;
 }
 
@@ -1273,11 +1282,14 @@ function selectTrip(id) {
 
 // Puts a person on the current trip's frequent-participant list (if not already) and on the form.
 async function addToTrip(pid, forWhat) {
-  const trip = curTrip();
+  const forTrip = forWhat === 'trip';
+  const trip = forTrip ? editingTrip() : curTrip();
   if (!trip) return;
-  if (forWhat === 'payer') state.form.payer = pid;
-  delete state.form.excl[pid];
-  state.picker = null;
+  if (!forTrip) {
+    if (forWhat === 'payer') state.form.payer = pid;
+    delete state.form.excl[pid];
+    state.picker = null; // on the trip screen the picker stays open to add several people
+  }
   state.newPerson = { name: '', phone: '', email: '' };
   if ((trip.members || []).includes(pid)) { render(); return; }
   const before = snapshot();
@@ -1368,9 +1380,19 @@ const actions = {
     if (!t) return;
     state.tripForm = { id: t.id, name: t.name, start: t.start || '', end: t.end || '', currency: toCode(t.currency), currencies: tripCurrencies(t), defaultSplit: tripDefaultSplit(t),
       weights: { people: { ...(t.weights?.people || {}) }, cabins: { ...(t.weights?.cabins || {}) } } };
+    state.picker = d.people ? 'trip' : null;
+    state.tripJustCreated = false;
     state.screen = 'tripEdit';
     render();
   },
+  tripPeopleDone() {
+    const t = editingTrip();
+    state.picker = null;
+    state.newPerson = { name: '', phone: '', email: '' };
+    if (state.tripJustCreated && t) { state.tripJustCreated = false; selectTrip(t.id); state.screen = 'balances'; }
+    render();
+  },
+  addPeople() { const t = curTrip(); if (t) actions.editTrip({ id: t.id, people: true }); },
   tripSplit(d) { state.tripForm.defaultSplit = d.mode; render(); },
   tripCur(d) {
     const f = state.tripForm;
@@ -1399,8 +1421,14 @@ const actions = {
     const before = snapshot();
     await commit(() => {
       replaceIn('trips', trip);
-      if (!old) { selectTrip(trip.id); state.screen = 'add'; } else state.screen = 'trips';
-    }, () => store.saveTrip(trip), () => { state.data = before; }, old ? 'Trip saved' : `${name} created. Add the first expense.`);
+      if (!old) {
+        selectTrip(trip.id);
+        state.tripForm = { ...f, id: trip.id, currencies, weights: { people: {}, cabins: {} }, defaultSplit };
+        state.picker = 'trip';
+        state.tripJustCreated = true;
+        state.screen = 'tripEdit';
+      } else state.screen = 'trips';
+    }, () => store.saveTrip(trip), () => { state.data = before; }, old ? 'Trip saved' : `${name} created. Add who’s coming.`);
   },
   async removeMember(d) {
     const trip = state.data.trips.find((t) => t.id === state.tripForm?.id);
