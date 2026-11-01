@@ -1,5 +1,5 @@
 // Caches the app shell so it opens instantly (and offline). Bump VERSION on each release.
-const VERSION = 'trip-split-v12';
+const VERSION = 'trip-split-v13';
 const SHELL = [
   './',
   './index.html',
@@ -8,6 +8,7 @@ const SHELL = [
   './js/logic.js',
   './js/store.js',
   './js/export.js',
+  './js/payments.js',
   './js/config.js',
   './manifest.webmanifest',
   './icons/icon.svg',

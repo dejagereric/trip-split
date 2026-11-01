@@ -1,6 +1,7 @@
 import { CONFIG } from './config.js';
 import { cents, splitEqual, splitWeighted, computeBalances, minimalTransfers, convert, convertShares } from './logic.js';
 import { createStore, DEFAULT_CATEGORIES } from './store.js';
+import { PAY_METHODS, payOptions, payLines, cleanPayment } from './payments.js';
 import { buildTables, downloadCsv, preloadGoogle, exportToGoogle } from './export.js';
 
 // ---------- constants ----------
@@ -118,6 +119,7 @@ const state = {
   invite: null,       // { token, group, from, to, email, role, valid } from an invitation link
   invites: [],        // pending invitations in this group (Administrators)
   inviteRole: 'user',
+  includePay: true,
   search: '',
   searchOpen: false,
   exportOpen: false,
@@ -476,6 +478,7 @@ function personEditHtml() {
     ${p && p.id === myPartyId()
       ? `<label class="field"><span class="lbl">Email</span><input type="email" value="${esc(f.email)}" readonly aria-readonly="true"><span class="small muted">Your sign-in email. It links this person to you.</span></label>`
       : `<label class="field"><span class="lbl">Email</span><input data-pf="email" type="email" autocomplete="off" placeholder="Optional" value="${esc(f.email)}"></label>`}
+    ${payFields(f.pay || {}, 'data-pf')}
     <div class="field"><span class="lbl">Color</span>
       <div class="wrap">${PALETTE.map((c, i) => `<button type="button" class="swatch${f.color === i ? ' on' : ''}" data-action="personColor" data-i="${i}" style="background:${c}" aria-label="Color ${i + 1}" aria-pressed="${f.color === i}"></button>`).join('')}</div>
     </div>
@@ -489,6 +492,20 @@ function personEditHtml() {
 }
 
 // ----- your details (cloud, once per group) -----
+// "Get paid back" fields; `attr` is data-pf (person card) or data-mf (Your details).
+function payFields(pay, attr) {
+  const filled = PAY_METHODS.filter((m) => String(pay[m.key] || '').trim());
+  return `<div class="field"><span class="lbl">Get paid back</span>
+    <span class="small muted">How this person likes to be reimbursed. Shown on Settle up and, if you choose, in settle-up messages. Trip Split never moves money.</span>
+    <div class="card tight pay-card">
+      ${PAY_METHODS.map((m) => `<label class="pay-row"><span class="pay-label">${m.label}</span>
+        <input ${attr}="pay.${m.key}" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="${esc(m.placeholder)}" value="${esc(pay[m.key] || '')}"></label>`).join('')}
+    </div>
+    ${filled.length > 1 ? `<label class="field"><span class="lbl">Preferred</span>
+      <select ${attr}="pay.preferred" aria-label="Preferred way to be paid">${filled.map((m) => `<option value="${m.key}" ${pay.preferred === m.key ? 'selected' : ''}>${m.label}</option>`).join('')}</select></label>` : ''}
+  </div>`;
+}
+
 function meHtml() {
   const f = state.meForm || { name: '', phone: '' };
   const unlinked = state.data.parties.filter((p) => !(p.email || '').trim());
@@ -497,6 +514,7 @@ function meHtml() {
     ${CAN_PICK_CONTACTS ? `<button type="button" class="btn" data-action="meFromContacts">${ICON.contacts}Fill in from my contact card</button>` : ''}
     <label class="field"><span class="lbl">Your name</span><input data-mf="name" type="text" maxlength="60" autocomplete="name" autocapitalize="words" placeholder="e.g. Eric de Jager" value="${esc(f.name)}"></label>
     <label class="field"><span class="lbl">Your phone</span><input data-mf="phone" type="tel" autocomplete="tel" placeholder="Optional" value="${esc(f.phone)}"></label>
+    ${payFields(f.pay || {}, 'data-mf')}
     <p class="small muted note">Tip: tap a field and your phone may offer to fill in your own name and number.</p>
     <label class="field"><span class="lbl">Email</span><input type="email" value="${esc(myEmail())}" readonly aria-readonly="true"></label>
     ${unlinked.length && !myPartyId() ? `<div class="field"><span class="lbl">Already on the list under another entry?</span>
@@ -515,7 +533,7 @@ function needsMe() {
 }
 function openMe() {
   const me = partyById(myPartyId());
-  state.meForm = { name: me?.name || '', phone: me?.phone || '' };
+  state.meForm = { name: me?.name || '', phone: me?.phone || '', pay: { ...(me?.payment || {}) } };
   state.screen = 'me';
 }
 
@@ -1023,13 +1041,34 @@ function summaryText(trip, calc, tr, ids) {
   else lines.push('Everyone is square — no payments due.');
   lines.push('', 'Shared spending: ' + money(calc.total));
   ids.forEach((id) => lines.push(`${nameOf(id)}: spent ${money(calc.b[id].paid)}, benefitted ${money(calc.b[id].share)}, net ${signed(calc.net[id])}`));
+  if (state.includePay) {
+    const owed = [...new Set(tr.map((t) => t.to))];
+    owed.forEach((id) => {
+      const total = tr.filter((t) => t.to === id).reduce((a, t) => a + t.amount, 0);
+      const pl = payLines(partyById(id), 0, CUR, '');
+      if (pl.length) lines.push('', `Pay ${nameOf(id)} (${money(total)} in total):`, ...pl);
+    });
+  }
   return lines.join('\n');
 }
 
+function payNote(t, trip) {
+  if (!state.includePay) return '';
+  const lines = payLines(partyById(t.to), t.amount, CUR, `${trip.name} settle-up`);
+  return lines.length ? `\n\nHow ${nameOf(t.to)} would like to be paid:\n${lines.join('\n')}` : '';
+}
+// Buttons that open the payee's own page in their payment app (amount filled in where supported).
+function payButtons(t) {
+  const opts = payOptions(partyById(t.to), t.amount, CUR, `${curTrip()?.name || 'Trip'} settle-up`);
+  if (!opts.length) return `<span class="small muted">${esc(nameOf(t.to))} hasn’t added a way to be paid yet (their profile → Get paid back).</span>`;
+  return `<div class="pay-opts"><span class="small muted">Pay ${esc(nameOf(t.to))} with:</span><div class="wrap">${opts.map((o) => o.url
+    ? `<a class="chip pay-chip" href="${esc(o.url)}" target="_blank" rel="noopener">${esc(o.label)}</a>`
+    : `<button type="button" class="chip pay-chip" data-action="copyText" data-text="${esc(o.handle)}" aria-label="Copy ${esc(o.label)} details">${esc(o.label)}: ${esc(o.handle)}</button>`).join('')}</div></div>`;
+}
 function messageLink(t, trip) {
   const p = partyById(t.from);
   if (!p) return '';
-  const body = `Hi ${p.name}, settling up for ${trip.name}: you owe ${nameOf(t.to)} ${money(t.amount)}.`;
+  const body = `Hi ${p.name}, settling up for ${trip.name}: you owe ${nameOf(t.to)} ${money(t.amount)}.` + payNote(t, trip);
   if (p.phone) return `<a class="btn" href="sms:${esc(p.phone.replace(/[^\d+]/g, ''))}?&body=${encodeURIComponent(body)}">Text ${esc(p.name)}</a>`;
   if (p.email) return `<a class="btn" href="mailto:${esc(p.email)}?subject=${encodeURIComponent(trip.name + ' settle-up')}&body=${encodeURIComponent(body)}">Email ${esc(p.name)}</a>`;
   return '';
@@ -1042,11 +1081,13 @@ function settleHtml() {
   const tr = minimalTransfers(calc.net, ids);
   const canShare = !!navigator.share;
   return `<div class="stack">
+    ${tr.length && tr.some((t) => payOptions(partyById(t.to)).length) ? `<label class="check-row"><input type="checkbox" data-include-pay="1" ${state.includePay ? 'checked' : ''}><span>Include payment links in messages and the summary</span></label>` : ''}
     ${tr.length ? `<p class="lead">${tr.length === 1 ? 'One payment settles' : tr.length + ' payments settle'} every balance.</p>
       ${tr.map((t, i) => `<div class="card">
         <div class="transfer">${av(t.from, 'lg')}<span class="arrow">${ICON.arrow}</span>${av(t.to, 'lg')}
           <span class="grow right"><span class="mid num">${money(t.amount)}</span><span class="small muted">${esc(nameOf(t.from))} pays ${esc(nameOf(t.to))}</span></span>
         </div>
+        ${payButtons(t)}
         <div class="row-btns">${messageLink(t, trip)}<button type="button" class="btn primary grow-btn" data-action="record" data-i="${i}">Mark as paid</button></div>
       </div>`).join('')}`
     : `<div class="card center"><span class="ok-icon">${ICON.check}</span><span class="strong big">Everyone is square</span><span class="muted">No payments are due.</span></div>`}
@@ -1364,11 +1405,11 @@ const actions = {
   },
 
   // people
-  newPersonScreen() { state.personForm = { id: null, name: '', phone: '', email: '', color: state.data.parties.length % PALETTE.length }; state.screen = 'personEdit'; render(); },
+  newPersonScreen() { state.personForm = { id: null, name: '', phone: '', email: '', color: state.data.parties.length % PALETTE.length, pay: {} }; state.screen = 'personEdit'; render(); },
   editPerson(d) {
     const p = partyById(d.id);
     if (!p) return;
-    state.personForm = { id: p.id, name: p.name, phone: p.phone || '', email: p.email || '', color: p.color || 0 };
+    state.personForm = { id: p.id, name: p.name, phone: p.phone || '', email: p.email || '', color: p.color || 0, pay: { ...(p.payment || {}) } };
     state.screen = 'personEdit';
     render();
   },
@@ -1386,7 +1427,7 @@ const actions = {
     const dup = state.data.parties.find((p) => p.id !== f.id && p.name.trim().toLowerCase() === name.toLowerCase());
     if (dup) { flash(`There’s already someone called ${dup.name}.`); return; }
     const old = f.id ? partyById(f.id) : null;
-    const p = { ...(old || { id: uuid(), createdAt: new Date().toISOString() }), name, phone: f.phone.trim(), email: f.email.trim(), color: f.color };
+    const p = { ...(old || { id: uuid(), createdAt: new Date().toISOString() }), name, phone: f.phone.trim(), email: f.email.trim(), color: f.color, payment: cleanPayment(f.pay || {}) };
     const before = snapshot();
     await commit(() => { replaceIn('parties', p); state.screen = 'people'; }, () => store.saveParty(p), () => { state.data = before; }, old ? 'Saved' : `${name} added`);
   },
@@ -1637,8 +1678,8 @@ const actions = {
     if (!name) { flash('Enter your name.'); return; }
     const existing = partyById(myPartyId()) || (state.claimId ? partyById(state.claimId) : null);
     const p = existing
-      ? { ...existing, name, phone: f.phone.trim(), email: myEmail() }
-      : { id: uuid(), name, phone: f.phone.trim(), email: myEmail(), color: state.data.parties.length % PALETTE.length, createdAt: new Date().toISOString() };
+      ? { ...existing, name, phone: f.phone.trim(), email: myEmail(), payment: cleanPayment(f.pay || {}) }
+      : { id: uuid(), name, phone: f.phone.trim(), email: myEmail(), payment: cleanPayment(f.pay || {}), color: state.data.parties.length % PALETTE.length, createdAt: new Date().toISOString() };
     pref.set('askedDetails:' + store.groupId, '1');
     const before = snapshot();
     state.claimId = null;
@@ -1765,6 +1806,7 @@ const actions = {
       flash(`${email} can now sign in. Tap Invite to send them the link.`);
     } catch (err) { flash(errorText(err)); }
   },
+  async copyText(d) { try { await navigator.clipboard.writeText(d.text); flash('Copied'); } catch { window.prompt('Copy:', d.text); } },
   inviteRole(d) { state.inviteRole = d.role === 'admin' ? 'admin' : 'user'; render(); },
   async sendInvite(d) {
     const role = d.role || state.inviteRole;
@@ -1896,6 +1938,11 @@ function sampleData() {
   };
 }
 
+function setFormField(form, key, value) {
+  if (key.startsWith('pay.')) { form.pay = form.pay || {}; form.pay[key.slice(4)] = value; }
+  else form[key] = value;
+}
+
 // ---------- events ----------
 document.addEventListener('click', (ev) => {
   const el = ev.target.closest('[data-action]');
@@ -1918,8 +1965,8 @@ document.addEventListener('input', (ev) => {
   else if (ds.nm) state.newMember = el.value;
   else if (ds.tf && state.tripForm) state.tripForm[ds.tf] = el.value;
   else if (ds.tw && state.tripForm) state.tripForm.weights[ds.tw][ds.id] = el.value.replace(/[^0-9.]/g, '');
-  else if (ds.pf && state.personForm) state.personForm[ds.pf] = el.value;
-  else if (ds.mf && state.meForm) state.meForm[ds.mf] = el.value;
+  else if (ds.pf && state.personForm) setFormField(state.personForm, ds.pf, el.value);
+  else if (ds.mf && state.meForm) setFormField(state.meForm, ds.mf, el.value);
   else if (ds.newcat) state.newCat = el.value;
   else if (ds.newgroup) state.newGroup = el.value;
   else if (ds.groupedit && state.groupEdit) state.groupEdit.name = el.value;
@@ -1949,6 +1996,7 @@ document.addEventListener('change', (ev) => {
     handleReceipt(file);
     return;
   }
+  if (ev.target.dataset && ev.target.dataset.includePay) { state.includePay = ev.target.checked; render(); return; }
   const act = ev.target.dataset && ev.target.dataset.actionChange;
   if (act && actions[act]) actions[act]({ value: ev.target.value });
 });

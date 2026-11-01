@@ -160,6 +160,9 @@ create table if not exists public.parties (
   color       integer not null default 0,
   created_at  timestamptz not null default now()
 );
+-- How each person likes to be paid back, e.g. {"venmo":"eric-dj","paypal":"ericdj","preferred":"venmo"}.
+-- For display and sharing only; Trip Split never moves money.
+alter table public.parties add column if not exists payment jsonb not null default '{}'::jsonb;
 
 -- Trips. member_ids = the trip's frequent participants (people who appear in its expenses).
 create table if not exists public.trips (

@@ -177,6 +177,14 @@ Trips → **Categories**: add, rename, reorder (↑ ↓) and delete expense cate
 
 Set each family's **people** and **cabins** under **trip → Edit → People and cabins per family**. On an expense split by people or cabins, the numbers are filled in from the trip and can be changed for that expense only (say the Smiths bring a guest one night). Each expense keeps the numbers it used, so later changes to the trip don't alter past expenses. Shares always add up to the exact total; leftover cents go to the largest remainders.
 
+## Getting paid back
+
+Each person's profile (People → person, or Your details) has a **Get paid back** section: Venmo, PayPal, Cash App, Revolut, Zelle, or any other link, plus which one they prefer. Pasting a profile address (e.g. `paypal.me/name`) is fine; just the name is kept.
+
+On **Settle up**, each payment shows **Pay [name] with:** buttons that open that person's page in the payment app, with the amount filled in where the app supports it (Venmo and Cash App only for US dollars). The **Text / Email** reminders and the shared summary include those links unless you untick *Include payment links*.
+
+**Trip Split never moves money.** It only stores and shares how each person would like to be paid. Everyone can edit their own details; Administrators can edit anyone's.
+
 ## How the math works
 
 - **Spent:** what a person paid out of pocket on this trip.

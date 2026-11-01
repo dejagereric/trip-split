@@ -105,8 +105,8 @@ async function cloudStore(config) {
 
   const tripRow = (t) => ({ id: t.id, group_id: groupId, name: t.name, currency: t.currency, currencies: t.currencies || [t.currency], weights: t.weights || {}, default_split: t.defaultSplit || 'equal', start_on: t.start || null, end_on: t.end || null, member_ids: t.members || [], created_at: t.createdAt });
   const tripFrom = (r) => ({ id: r.id, name: r.name, currency: r.currency, currencies: Array.isArray(r.currencies) ? r.currencies : null, weights: r.weights || {}, defaultSplit: r.default_split || 'equal', start: r.start_on || '', end: r.end_on || '', members: r.member_ids || [], createdAt: r.created_at });
-  const partyRow = (p) => ({ id: p.id, group_id: groupId, name: p.name, phone: p.phone || null, email: p.email || null, color: p.color ?? 0, created_at: p.createdAt });
-  const partyFrom = (r) => ({ id: r.id, name: r.name, phone: r.phone || '', email: r.email || '', color: r.color ?? 0, createdAt: r.created_at });
+  const partyRow = (p) => ({ id: p.id, group_id: groupId, name: p.name, phone: p.phone || null, email: p.email || null, color: p.color ?? 0, payment: p.payment || {}, created_at: p.createdAt });
+  const partyFrom = (r) => ({ id: r.id, name: r.name, phone: r.phone || '', email: r.email || '', color: r.color ?? 0, payment: r.payment || {}, createdAt: r.created_at });
   const entryRow = (e) => ({
     id: e.id, group_id: groupId, trip_id: e.tripId, kind: e.kind,
     description: e.desc ?? null, category: e.cat ?? null, spent_on: e.date, amount_cents: e.amount,
