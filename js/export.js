@@ -65,9 +65,15 @@ export function buildTables(ctx) {
 }
 
 // ---------- CSV ----------
+// Spreadsheet apps treat a cell that starts with = + - @ (or a tab or carriage return) as a
+// formula, so a description such as =HYPERLINK(...) would turn into a live link, or worse, when
+// the file is opened. Text cells that start that way get a leading apostrophe, which spreadsheets
+// read as "this is text". Numbers are left as they are, so negative balances stay numbers.
+const FORMULA_START = /^[=+\-@\t\r]/;
 export function toCsv(rows) {
   const cell = (v) => {
-    const s = v == null ? '' : String(v);
+    let s = v == null ? '' : String(v);
+    if (typeof v === 'string' && FORMULA_START.test(s)) s = "'" + s;
     return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
   };
   return rows.map((r) => r.map(cell).join(',')).join('\r\n');

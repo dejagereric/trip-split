@@ -3,6 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- Content Security Policy: limits where the page may load code and data from, so an injected
+     script can't run or send data elsewhere. GitHub Pages can't set headers, so it lives here.
+     If you change supabaseUrl in js/config.js, change the Supabase address below to match.
+     style-src allows inline styles: the app sets a few style="" attributes, and Google sign-in injects styles. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net https://accounts.google.com/gsi/client; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com/gsi/style; font-src https://fonts.gstatic.com; img-src 'self' data: blob: https://pmutzpswuqvrtkdqplgs.supabase.co; connect-src 'self' https://pmutzpswuqvrtkdqplgs.supabase.co https://api.frankfurter.dev https://sheets.googleapis.com https://accounts.google.com/gsi/; frame-src https://accounts.google.com/gsi/; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests">
 <title>Trip Split</title>
 <meta name="description" content="Track and settle shared trip costs with the people you travel with.">
 <meta name="theme-color" content="#EEF1F4">
