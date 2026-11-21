@@ -98,7 +98,8 @@ The database records who added each trip, expense, payment, category and receipt
 | See all trips, expenses, payments, categories and receipt photos | Yes | Yes |
 | Add trips, expenses, payments, categories and receipt photos | Yes | Yes |
 | Edit or delete **expenses and payments** | Anyone's | Only ones they added |
-| Edit or delete **trips** | Anyone's | Only ones they added; deleting needs every expense in it to be theirs too (deleting a trip deletes its expenses) |
+| Edit or delete **trips** | Anyone's | Only ones they added |
+| Mark a trip **inactive** (hidden from the trip lists; its expenses and payments are read-only) or active again | Anyone's | Only ones they added |
 | Rename or delete **categories** | Anyone's | Only ones they added (renaming relabels every expense that uses it) |
 | Reorder categories | Yes | No |
 | Delete **receipt photos** | Anyone's | Only ones they uploaded, or on an expense they added |
@@ -110,6 +111,7 @@ The database records who added each trip, expense, payment, category and receipt
 | **Access**: give / remove access, change roles | Yes | No |
 | Rename or delete the group | Yes | No |
 
+- **Deleting a trip never destroys other people's records.** The person deleting it loses only their own entries. Everyone else's expenses and payments move, unchanged, to a default trip each of them owns (one per currency, named like "Eric's expenses"), and the ledger shows where each one came from. The database does this in one step (`delete_trip()`), and a trip holding other people's entries can't be deleted any other way, by Administrators either.
 - Whoever creates a group is its first Administrator, and a group can never lose its last Administrator (the database refuses).
 - A User can't add a brand-new person from *Add expense*; they pick people already in the group.
 

@@ -156,9 +156,45 @@ const myPartyId = () => {
 const isAdmin = () => !store || store.mode !== 'cloud' || state.members.some((m) => m.email === myEmail() && m.role === 'admin');
 const mine = (rec) => !!rec && !!myEmail() && (rec.createdBy || '').trim().toLowerCase() === myEmail();
 const canChange = (rec) => !!rec && (isAdmin() || mine(rec));
-// Deleting a trip deletes its expenses, so a User may delete their own trip only when every expense in it is theirs.
-const canDeleteTrip = (trip) => !!trip && (isAdmin() || (mine(trip) && tripEntries(trip.id).every(mine)));
+// A trip's owner or an Administrator may delete it; other people's entries move to their own default trips.
+const canDeleteTrip = (trip) => canChange(trip);
+// Inactive trips are hidden from the trip lists, and their expenses and payments are read-only.
+const isActiveTrip = (t) => !!t && !t.inactiveAt;
+const tripOf = (e) => state.data.trips.find((t) => t.id === e.tripId);
+const canChangeEntry = (e) => canChange(e) && isActiveTrip(tripOf(e));
+const latestActiveTrip = (exceptId) => sortTrips(state.data.trips.filter((t) => isActiveTrip(t) && t.id !== exceptId))[0] || null;
+// "Lisbon · deleted by Frank Forte · 2026-11-21" -> "Lisbon, deleted by Frank Forte on Nov 21"
+const movedText = (m) => { const [from, by, day] = String(m).split(' · '); return [from, by].filter(Boolean).join(', ') + (day ? ' on ' + fmtShort(day) : ''); };
+function deletePlan(trip) {
+  const cloud = store?.mode === 'cloud';
+  const me = myEmail();
+  const es = tripEntries(trip.id);
+  const owner = (e) => (e.createdBy || trip.createdBy || '').trim().toLowerCase();
+  const own = es.filter((e) => !cloud || !owner(e) || owner(e) === me);
+  const others = new Map();
+  es.filter((e) => !own.includes(e)).forEach((e) => {
+    const o = others.get(owner(e)) || { name: addedBy(owner(e)), count: 0, payments: 0 };
+    o.count++; if (e.kind === 'payment') o.payments++;
+    others.set(owner(e), o);
+  });
+  const list = [...others.values()];
+  const yours = own.length ? `Your ${plural(own.length, 'entry', 'entries')} will be deleted.` : 'You have no entries on this trip.';
+  const moves = list.map((o) => `${o.name}’s ${plural(o.count, 'entry', 'entries')} will move to a trip of their own.`);
+  const note = list.length ? `Deleting removes your entries (${own.length}). The ${plural(list.reduce((n, o) => n + o.count, 0), 'entry', 'entries')} other people added move to a default trip each of them owns.`
+    : `Deleting removes the trip and its ${plural(es.length, 'entry', 'entries')}.`;
+  const confirm = list.length
+    ? [`Delete “${trip.name}” for everyone?`, '', yours, ...moves,
+       ...(list.some((o) => o.payments) ? ['', 'Settle-up payments move with whoever recorded them, so balances may look different in each trip.'] : []),
+       '', 'This can’t be undone.'].join('\n')
+    : `Delete “${trip.name}”${es.length ? ' and its ' + plural(es.length, 'entry', 'entries') : ''} for everyone? This can’t be undone.`;
+  return { note, confirm };
+}
+function inactiveBanner(trip = curTrip()) {
+  if (!trip || isActiveTrip(trip)) return '';
+  return `<div class="card inactive-card"><span class="strong">This trip is inactive</span><span class="muted">Its expenses and payments can’t be changed. ${canChange(trip) ? 'To change them, make it active again under Trips → Edit.' : 'The trip’s owner or an Administrator can make it active again.'}</span></div>`;
+}
 const NO_PERMISSION = 'You can only change what you added. Ask an Administrator.';
+const INACTIVE_TRIP = 'This trip is inactive. Make it active again to change it.';
 // Adding people or currencies to a trip's lists while logging an expense. On a trip you can't
 // change, only the additions are sent, and the database only appends them.
 function saveTripAdditions(trip, updated) {
@@ -402,30 +438,35 @@ function chip(label, action, data, on, extra = '') {
 }
 
 // ----- trips -----
+function tripCardHtml(t) {
+  const es = tripEntries(t.id);
+  const calc = computeBalances(es, tripIds(t));
+  const ids = tripIds(t);
+  const current = t.id === state.tripId;
+  return `<div class="card trip-card${current ? ' current' : ''}">
+    <button type="button" class="trip-open" data-action="selectTrip" data-id="${esc(t.id)}">
+      <span class="grow">
+        <span class="strong big">${esc(t.name)}</span>
+        <span class="small muted">${esc([fmtRange(t.start, t.end), plural(calc.expCount, 'expense', 'expenses'), money(calc.total, t.currency)].filter(Boolean).join(' · '))}</span>
+      </span>
+      ${current ? '<span class="badge">Current</span>' : ''}${t.defaultFor ? '<span class="badge quiet">Default trip</span>' : ''}${isActiveTrip(t) ? '' : '<span class="badge quiet">Inactive</span>'}
+    </button>
+    <div class="trip-foot">
+      <span class="dots">${ids.length ? ids.slice(0, 8).map((id) => av(id, 'dot')).join('') : '<span class="small muted">No one yet</span>'}</span>
+      ${canChange(t) ? `<button type="button" class="link" data-action="editTrip" data-id="${esc(t.id)}">Edit</button>` : ''}
+    </div>
+  </div>`;
+}
+
 function tripsHtml() {
-  const trips = sortTrips(state.data.trips);
+  const trips = sortTrips(state.data.trips.filter(isActiveTrip));
+  const inactive = sortTrips(state.data.trips.filter((t) => !isActiveTrip(t)));
   return `<div class="stack">
     <button type="button" class="btn primary" data-action="newTrip">${ICON.plus}New trip</button>
-    ${trips.length ? trips.map((t) => {
-      const es = tripEntries(t.id);
-      const calc = computeBalances(es, tripIds(t));
-      const ids = tripIds(t);
-      const current = t.id === state.tripId;
-      return `<div class="card trip-card${current ? ' current' : ''}">
-        <button type="button" class="trip-open" data-action="selectTrip" data-id="${esc(t.id)}">
-          <span class="grow">
-            <span class="strong big">${esc(t.name)}</span>
-            <span class="small muted">${esc([fmtRange(t.start, t.end), plural(calc.expCount, 'expense', 'expenses'), money(calc.total, t.currency)].filter(Boolean).join(' · '))}</span>
-          </span>
-          ${current ? '<span class="badge">Current</span>' : ''}
-        </button>
-        <div class="trip-foot">
-          <span class="dots">${ids.length ? ids.slice(0, 8).map((id) => av(id, 'dot')).join('') : '<span class="small muted">No one yet</span>'}</span>
-          ${canChange(t) ? `<button type="button" class="link" data-action="editTrip" data-id="${esc(t.id)}">Edit</button>` : ''}
-        </div>
-      </div>`;
-    }).join('') : `<div class="card center"><p class="strong big">No trips yet</p><p class="muted">Create a trip, then add expenses. People are added as you go.</p>
+    ${trips.length ? trips.map((t) => tripCardHtml(t)).join('') : `<div class="card center"><p class="strong big">${inactive.length ? 'No active trips' : 'No trips yet'}</p><p class="muted">Create a trip, then add expenses. People are added as you go.</p>
       ${store?.mode === 'local' ? '<button class="btn" data-action="loadSample">Try it with sample data</button>' : ''}</div>`}
+    ${inactive.length ? `<details class="inactive-trips"${state.showInactive ? ' open' : ''}><summary data-action="toggleInactive">Inactive trips (${inactive.length})</summary>
+      <div class="stack">${inactive.map((t) => tripCardHtml(t)).join('')}</div></details>` : ''}
   </div>`;
 }
 
@@ -479,8 +520,12 @@ function tripEditHtml() {
       </div>
     </div>` : (trip ? '<p class="small muted note">Once people are on this trip, set each family’s people and cabins here.</p>' : '')}
     <button type="button" class="btn primary big" data-action="saveTrip">${trip ? 'Save trip settings' : 'Create trip'}</button>
-    ${trip && canDeleteTrip(trip) ? `<button type="button" class="btn danger" data-action="deleteTrip" data-id="${esc(trip.id)}">Delete trip${es.length ? ' and its ' + plural(es.length, 'entry', 'entries') : ''}</button>` : ''}
-    ${trip && !canDeleteTrip(trip) ? '<p class="small muted note">Other people have added expenses to this trip, so only an Administrator can delete it.</p>' : ''}
+    ${trip && canChange(trip) ? `<h2>Trip status</h2>
+      <p class="small muted note">${isActiveTrip(trip) ? 'An inactive trip is hidden from the trip lists, and its expenses and payments can’t be changed. Nothing is deleted.'
+        : `Inactive${trip.inactiveAt ? ' since ' + esc(fmtShort(trip.inactiveAt)) : ''}${trip.inactiveBy ? ' (marked by ' + esc(addedBy(trip.inactiveBy)) + ')' : ''}. Make it active again to add or change expenses.`}</p>
+      <button type="button" class="btn" data-action="setTripActive" data-id="${esc(trip.id)}" data-active="${isActiveTrip(trip) ? '0' : '1'}">${isActiveTrip(trip) ? 'Mark trip inactive' : 'Make active again'}</button>
+      <button type="button" class="btn danger" data-action="deleteTrip" data-id="${esc(trip.id)}">Delete trip</button>
+      <p class="small muted note">${esc(deletePlan(trip).note)}</p>` : ''}
   </div>`;
 }
 
@@ -766,17 +811,17 @@ function balancesHtml() {
   const es = tripEntries();
   const ids = tripIds();
   if (!es.length) {
-    return `<div class="stack"><div class="card center">
+    return `<div class="stack">${inactiveBanner()}<div class="card center">
       <p class="strong big">No expenses yet</p>
       <p class="muted">${ids.length > 1 ? 'Add the first one.' : 'Add who’s coming, then the first expense.'}</p>
-      ${ids.length > 1 || !canChange(curTrip()) ? '' : `<button class="btn primary" data-action="addPeople">${ICON.plus}Add people</button>`}
-      <button class="btn ${ids.length > 1 ? 'primary' : ''}" data-action="newExpense">Add first expense</button>
+      ${ids.length > 1 || !canChange(curTrip()) || !isActiveTrip(curTrip()) ? '' : `<button class="btn primary" data-action="addPeople">${ICON.plus}Add people</button>`}
+      ${isActiveTrip(curTrip()) ? `<button class="btn ${ids.length > 1 ? 'primary' : ''}" data-action="newExpense">Add first expense</button>` : ''}
     </div></div>`;
   }
   const calc = computeBalances(es, ids);
   const tr = minimalTransfers(calc.net, ids);
   const recent = sortEntries(es).slice(0, 3);
-  return `<div class="stack">
+  return `<div class="stack">${inactiveBanner()}
     <div class="card dark split">
       <div><span class="lbl-dark">Shared spending so far</span><span class="hero num">${money(calc.total)}</span></div>
       <span class="lbl-dark right">${plural(ids.length, 'person', 'people')}<br>${plural(calc.expCount, 'expense', 'expenses')}</span>
@@ -882,6 +927,7 @@ function refreshFx() {
 }
 
 function addHtml() {
+  if (curTrip() && !isActiveTrip(curTrip())) return `<div class="stack">${inactiveBanner()}</div>`;
   const fm = state.form;
   const members = formIds();
   // New expenses default to you as the payer (or the trip's first person if you're not set up).
@@ -1012,7 +1058,7 @@ function ledgerHtml() {
     </div>`;
   }
   const google = !!CONFIG.googleClientId;
-  return `<div class="stack">
+  return `<div class="stack">${inactiveBanner()}
     <div class="ledger-tools">
       <button type="button" class="btn tool${state.searchOpen ? ' on' : ''}" data-action="toggleSearch" aria-expanded="${!!state.searchOpen}">${ICON.search}Search</button>
       <button type="button" class="btn tool${state.exportOpen ? ' on' : ''}" data-action="toggleExport" aria-expanded="${!!state.exportOpen}" ${es.length ? '' : 'disabled'}>${ICON.export}Export</button>
@@ -1065,7 +1111,8 @@ function ledgerListHtml() {
         ${open ? `<div class="entry-body">
           ${rurl ? `<button type="button" class="link with-thumb" data-action="viewReceipt" data-url="${esc(rurl)}"><img src="${esc(rurl)}" alt="">View receipt</button>` : e.receipt ? '<span class="small muted">Loading receipt…</span>' : ''}
           ${e.createdBy ? `<span class="small muted">Added by ${esc(addedBy(e.createdBy))}</span>` : ''}
-          ${canChange(e) ? `<div class="row-btns">
+          ${e.movedFrom ? `<span class="small muted">Moved from ${esc(movedText(e.movedFrom))}</span>` : ''}
+          ${canChangeEntry(e) ? `<div class="row-btns">
             ${e.kind === 'expense' ? `<button type="button" class="btn" data-action="editExpense" data-id="${esc(e.id)}">Edit</button>` : ''}
             <button type="button" class="btn danger" data-action="del" data-id="${esc(e.id)}">Delete</button>
           </div>` : ''}
@@ -1126,7 +1173,7 @@ function settleHtml() {
   const calc = computeBalances(tripEntries(), ids);
   const tr = minimalTransfers(calc.net, ids);
   const canShare = !!navigator.share;
-  return `<div class="stack">
+  return `<div class="stack">${inactiveBanner()}
     ${tr.length && tr.some((t) => payOptions(partyById(t.to)).length) ? `<label class="check-row"><input type="checkbox" data-include-pay="1" ${state.includePay ? 'checked' : ''}><span>Include payment links in messages and the summary</span></label>` : ''}
     ${tr.length ? `<p class="lead">${tr.length === 1 ? 'One payment settles' : tr.length + ' payments settle'} every balance.</p>
       ${tr.map((t, i) => `<div class="card">
@@ -1134,7 +1181,7 @@ function settleHtml() {
           <span class="grow right"><span class="mid num">${money(t.amount)}</span><span class="small muted">${esc(nameOf(t.from))} pays ${esc(nameOf(t.to))}</span></span>
         </div>
         ${payButtons(t)}
-        <div class="row-btns">${messageLink(t, trip)}<button type="button" class="btn primary grow-btn" data-action="record" data-i="${i}">Mark as paid</button></div>
+        <div class="row-btns">${messageLink(t, trip)}${isActiveTrip(trip) ? `<button type="button" class="btn primary grow-btn" data-action="record" data-i="${i}">Mark as paid</button>` : ''}</div>
       </div>`).join('')}`
     : `<div class="card center"><span class="ok-icon">${ICON.check}</span><span class="strong big">Everyone is square</span><span class="muted">No payments are due.</span></div>`}
 
@@ -1186,7 +1233,7 @@ async function refresh() {
     }
     state.error = '';
     if (!curTrip()) {
-      const fallback = sortTrips(state.data.trips)[0];
+      const fallback = latestActiveTrip() || sortTrips(state.data.trips)[0];
       state.tripId = fallback ? fallback.id : '';
       if (!fallback && TRIP_SCREENS.includes(state.screen)) state.screen = 'trips';
     }
@@ -1262,6 +1309,7 @@ function startPolling() {
 // Words for a failed save. The database refuses what your role doesn't allow.
 function errorText(err) {
   const m = String(err?.message || '');
+  if (/trip_inactive/.test(m)) return INACTIVE_TRIP;
   if (err?.code === '42501' || err?.message === 'not_allowed' || /row-level security|permission denied/i.test(m)) return 'You don’t have permission to do that. Ask an Administrator.';
   if (/at least one Administrator/i.test(m)) return 'A group needs at least one Administrator.';
   if (/limited to Administrators/i.test(m)) return 'Only Administrators can create groups.';
@@ -1385,6 +1433,7 @@ const actions = {
   },
   reload() { state.loading = true; render(); refresh(); },
   newExpense() {
+    if (curTrip() && !isActiveTrip(curTrip())) { flash(INACTIVE_TRIP); return; }
     if (state.editId) { state.editId = null; state.form = blankForm(); state.receipt = blankReceipt(); }
     state.picker = null;
     actions.go({ screen: 'add' });
@@ -1460,17 +1509,41 @@ const actions = {
   async deleteTrip(d) {
     const trip = state.data.trips.find((t) => t.id === d.id);
     if (!trip) return;
-    if (!canDeleteTrip(trip)) { flash(isAdmin() || mine(trip) ? 'Other people have added expenses to this trip, so only an Administrator can delete it.' : NO_PERMISSION); return; }
-    const n = tripEntries(trip.id).length;
-    if (!window.confirm(`Delete “${trip.name}”${n ? ' and its ' + plural(n, 'entry', 'entries') : ''} for everyone? This can’t be undone.`)) return;
-    const before = snapshot();
-    await commit(() => {
-      removeFrom('trips', trip.id);
-      state.data.entries = state.data.entries.filter((e) => e.tripId !== trip.id);
-      if (state.tripId === trip.id) { const next = sortTrips(state.data.trips)[0]; selectTrip(next ? next.id : ''); }
+    if (!canDeleteTrip(trip)) { flash(NO_PERMISSION); return; }
+    if (!window.confirm(deletePlan(trip).confirm)) return;
+    try {
+      const res = await store.deleteTrip(trip.id);
+      if (state.tripId === trip.id) { const next = latestActiveTrip(trip.id); selectTrip(next ? next.id : ''); }
       state.screen = 'trips';
-    }, () => store.deleteTrip(trip.id), () => { state.data = before; }, 'Trip deleted');
+      await refresh();
+      const moved = (res?.moved || []).map((m) => `${plural(m.count, 'entry', 'entries')} of ${m.name || m.email}’s to “${m.trip_name}”`);
+      flash(`${trip.name} deleted.${moved.length ? ' Moved ' + moved.join(', ') + '.' : ''}`);
+      render();
+    } catch (err) { flash(errorText(err)); }
   },
+  async setTripActive(d) {
+    const trip = state.data.trips.find((t) => t.id === d.id);
+    if (!trip) return;
+    if (!canChange(trip)) { flash(NO_PERMISSION); return; }
+    const active = d.active === '1';
+    if (!active) {
+      const ids = tripIds(trip);
+      const due = minimalTransfers(computeBalances(tripEntries(trip.id), ids).net, ids).length;
+      if (!window.confirm(due
+        ? `“${trip.name}” isn’t settled yet: ${plural(due, 'payment is', 'payments are')} still due. Once it’s inactive, nobody can record a payment. Mark it inactive anyway?`
+        : `Mark “${trip.name}” inactive? It will be hidden from the trip lists, and its expenses can’t be changed until it’s made active again.`)) return;
+    }
+    const before = snapshot();
+    const updated = { ...trip, inactiveAt: active ? '' : new Date().toISOString(), inactiveBy: active ? '' : myEmail() };
+    await commit(() => {
+      replaceIn('trips', updated);
+      if (!active) {
+        if (state.tripId === trip.id) { const next = latestActiveTrip(trip.id); selectTrip(next ? next.id : ''); }
+        state.screen = 'trips';
+      }
+    }, () => store.setTripActive(trip.id, active), () => { state.data = before; }, active ? `${trip.name} is active again` : `${trip.name} is now inactive`);
+  },
+  toggleInactive() { state.showInactive = !state.showInactive; render(); },
 
   // people
   newPersonScreen() { state.personForm = { id: null, name: '', phone: '', email: '', color: state.data.parties.length % PALETTE.length, pay: {} }; state.screen = 'personEdit'; render(); },
@@ -1547,6 +1620,7 @@ const actions = {
     const e = state.data.entries.find((x) => x.id === d.id);
     if (!e || e.kind !== 'expense') return;
     if (!canChange(e)) { flash(NO_PERMISSION); return; }
+    if (!isActiveTrip(tripOf(e))) { flash(INACTIVE_TRIP); return; }
     const members = formIds();
     state.editId = e.id;
     state.form = {
@@ -1694,6 +1768,7 @@ const actions = {
   async del(d) {
     const gone = state.data.entries.find((e) => e.id === d.id);
     if (gone && !canChange(gone)) { flash(NO_PERMISSION); return; }
+    if (gone && !isActiveTrip(tripOf(gone))) { flash(INACTIVE_TRIP); return; }
     if (!gone || !window.confirm(`Delete “${rowTitle(gone)}” (${money(gone.amount)}) for everyone?`)) return;
     const before = snapshot();
     await commit(() => { removeFrom('entries', d.id); state.openId = null; }, () => store.deleteEntry(d.id), () => { state.data = before; }, 'Entry deleted');
@@ -1704,6 +1779,7 @@ const actions = {
 
   // settle
   async record(d) {
+    if (curTrip() && !isActiveTrip(curTrip())) { flash(INACTIVE_TRIP); return; }
     const ids = tripIds();
     const calc = computeBalances(tripEntries(), ids);
     const t = minimalTransfers(calc.net, ids)[Number(d.i)];

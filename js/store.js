@@ -66,7 +66,12 @@ function localStore(groupId) {
         members: Array.from(new Set([...(t.members || []), ...people])),
         currencies: Array.from(new Set([...(t.currencies || [t.currency]), ...currencies])) })); });
     },
-    async deleteTrip(id) { update((d) => { d.trips = d.trips.filter((t) => t.id !== id); d.entries = d.entries.filter((e) => e.tripId !== id); }); },
+    async deleteTrip(id) {
+      let deleted = 0;
+      update((d) => { deleted = d.entries.filter((e) => e.tripId === id).length; d.trips = d.trips.filter((t) => t.id !== id); d.entries = d.entries.filter((e) => e.tripId !== id); });
+      return { deleted, moved: [] };
+    },
+    async setTripActive(id, active) { update((d) => { d.trips = d.trips.map((t) => (t.id !== id ? t : { ...t, inactiveAt: active ? '' : new Date().toISOString() })); }); },
     async saveParty(p) { update((d) => { d.parties = upsertById(d.parties, p); }); },
     async deleteParty(id) { update((d) => { d.parties = d.parties.filter((p) => p.id !== id); }); },
     async saveEntry(e) { update((d) => { d.entries = upsertById(d.entries, e); }); },
@@ -109,7 +114,8 @@ async function cloudStore(config) {
   const signed = new Map(); // receipt path -> { url, at }
 
   const tripRow = (t) => ({ id: t.id, group_id: groupId, name: t.name, currency: t.currency, currencies: t.currencies || [t.currency], weights: t.weights || {}, default_split: t.defaultSplit || 'equal', start_on: t.start || null, end_on: t.end || null, member_ids: t.members || [], created_at: t.createdAt });
-  const tripFrom = (r) => ({ id: r.id, name: r.name, currency: r.currency, currencies: Array.isArray(r.currencies) ? r.currencies : null, weights: r.weights || {}, defaultSplit: r.default_split || 'equal', start: r.start_on || '', end: r.end_on || '', members: r.member_ids || [], createdAt: r.created_at, createdBy: r.created_by_email || '' });
+  const tripFrom = (r) => ({ id: r.id, name: r.name, currency: r.currency, currencies: Array.isArray(r.currencies) ? r.currencies : null, weights: r.weights || {}, defaultSplit: r.default_split || 'equal', start: r.start_on || '', end: r.end_on || '', members: r.member_ids || [], createdAt: r.created_at, createdBy: r.created_by_email || '',
+    inactiveAt: r.inactive_at || '', inactiveBy: r.inactive_by || '', defaultFor: r.default_for_email || '' });
   const partyRow = (p) => ({ id: p.id, group_id: groupId, name: p.name, phone: p.phone || null, email: p.email || null, color: p.color ?? 0, payment: p.payment || {}, created_at: p.createdAt });
   const partyFrom = (r) => ({ id: r.id, name: r.name, phone: r.phone || '', email: r.email || '', color: r.color ?? 0, payment: r.payment || {}, createdAt: r.created_at });
   const entryRow = (e) => ({
@@ -122,7 +128,7 @@ async function cloudStore(config) {
   const entryFrom = (r) => ({
     id: r.id, tripId: r.trip_id, kind: r.kind, desc: r.description ?? '', cat: r.category ?? 'Other',
     date: r.spent_on, amount: r.amount_cents, payer: r.payer, shares: r.shares || {}, mode: r.split_mode,
-    from: r.from_party, to: r.to_party, receipt: r.receipt_path || '', createdAt: r.created_at, createdBy: r.created_by_email || '',
+    from: r.from_party, to: r.to_party, receipt: r.receipt_path || '', createdAt: r.created_at, createdBy: r.created_by_email || '', movedFrom: r.moved_from || '',
     splitWeights: r.split_weights || null, origAmount: r.orig_amount_cents ?? null, origCurrency: r.orig_currency || null, fxRate: r.fx_rate != null ? Number(r.fx_rate) : null, fxDate: r.fx_date || null,
   });
 
@@ -192,7 +198,13 @@ async function cloudStore(config) {
       must(await sb.rpc('add_to_trip', { trip: id, people, add_currencies: currencies }));
     },
     // A delete the database refuses removes nothing rather than failing, so check what was removed.
-    async deleteTrip(id) { if (!must(await sb.from('trips').delete().eq('id', id).select('id')).length) throw new Error('not_allowed'); },
+    // Deletes a trip: other people's entries move to a default trip each of them owns, and only
+    // your own are deleted. -> { deleted, moved: [{ email, name, trip_id, trip_name, count }] }
+    async deleteTrip(id) { return must(await sb.rpc('delete_trip', { trip: id })); },
+    // An inactive trip is hidden from the trip lists and its expenses are read-only.
+    async setTripActive(id, active) {
+      if (!must(await sb.from('trips').update({ inactive_at: active ? null : new Date().toISOString() }).eq('id', id).select('id')).length) throw new Error('not_allowed');
+    },
     async saveParty(p) { must(await sb.from('parties').upsert(partyRow(p))); },
     async deleteParty(id) { if (!must(await sb.from('parties').delete().eq('id', id).select('id')).length) throw new Error('not_allowed'); },
     async saveEntry(e) { must(await sb.from('entries').upsert(entryRow(e))); },
