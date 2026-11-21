@@ -28,12 +28,8 @@ _Last updated: November 21, 2026_
 - **Profile button (Nov 1):** initials at the top right of every signed-in screen open Your profile (the Your details screen in edit mode: name, phone, payment apps, Sign out), returning to the previous screen.
 - **Adding people to a trip (Nov 1 fix):** creating a trip now opens straight to “Who’s coming?” (add people, then Done → Balances). On any trip, Trips → Edit shows “Who’s on this trip” first, with an Add people button. A trip with only you shows Add people on Balances.
 - **Update banner (Nov 1):** the app checks for a new release when it comes back to the front (and every 30 min). When one has arrived, a banner at the top says “A new version of Trip Split is ready” with a Refresh button. The service worker also skips the browser's HTTP cache. Remember to bump `VERSION` in `sw.js` on each release, since that's what triggers the banner.
+- **Inactive trips and safer trip deletion (Nov 21):** plan: https://claude.ai/artifact/JRZJqNSa2UcsSvqQBGAHkX (built with the recommended answer to all seven decisions). The trip's owner or an Administrator can mark a trip inactive (`trips.inactive_at`/`inactive_by`): hidden in a collapsed "Inactive trips" section, its expenses and payments read-only (database rule), make active again from trip settings. `delete_trip()` deletes the caller's own entries and moves everyone else's, unchanged, to their default trip (`trips.default_for_email`, one per person per currency, owned by them, only them on its people list, reactivated if inactive), recording `entries.moved_from` (shown as "Moved from …" in the ledger). A direct trip delete needs every entry to be the caller's, for Administrators too. Migration `trip_lifecycle`. Tests: `supabase/tests/trip_lifecycle.test.sql` (23 checks) and the rbac test (31), all passing on the live database (rolled back). sw v19.
 - **Layout:** the app is pinned to the visible screen (fixed position), which fixes the tab bar dropping below the screen on Android.
-
-## Next: inactive trips and safer trip deletion (planned Nov 21)
-
-Plan and open decisions: https://claude.ai/artifact/JRZJqNSa2UcsSvqQBGAHkX ("Trip Split: inactive trips and safer trip deletion").
-Owners and Administrators can mark a trip inactive (hidden, read-only); deleting a trip moves other people's entries to a default trip each of them owns (`delete_trip()`), and only the deleter's own entries are deleted. Waiting on Eric's answers to the seven decisions in the plan.
 
 ## Next: custom domain `trips.ericdejager.com`
 
