@@ -150,7 +150,16 @@ async function cloudStore(config) {
       async signOut() { await sb.auth.signOut(); },
     },
 
-    async listGroups() { return must(await sb.from('groups').select('id, name, created_at').order('created_at')); },
+    // Your groups, each with your role in it ('admin' or 'user').
+    async listGroups() {
+      const { data: s } = await sb.auth.getSession();
+      const me = (s.session?.user?.email || '').toLowerCase();
+      const [groups, roles] = await Promise.all([
+        sb.from('groups').select('id, name, created_at').order('created_at').then(must),
+        sb.from('group_members').select('group_id, role').eq('email', me).then(must),
+      ]);
+      return groups.map((g) => ({ ...g, role: (roles.find((r) => r.group_id === g.id) || {}).role || 'user' }));
+    },
     async createGroup(name) { return must(await sb.rpc('create_group', { group_name: name })); },
     // Invitations (Administrators). Preview works before signing in.
     async invitePreview(token) { const { data, error } = await sb.rpc('invite_preview', { invite: token }); if (error) throw error; return data; },

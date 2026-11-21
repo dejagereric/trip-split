@@ -133,12 +133,9 @@ Links work once and expire after 30 days. **Access → Pending invitations** lis
 A **group** is one circle of people: its own trips, people, categories and access list. Groups never see each other, so use one per circle (e.g. "Family", "Sailing crew").
 
 - **Access → Groups**: open (switch), rename, delete, and **Create group**. Creating makes you the new group's Administrator, and it starts with the default categories. People are per group, so you'll fill in Your details once in each.
-- **Group creation is locked**: only someone who already administers a group can create one (enforced in the database). People who sign in without an invitation are told to ask for one and aren't offered a group of their own.
-- **To open creation to everyone later**, run in the Supabase SQL editor:
-  ```sql
-  update private.settings set value = 'true' where key = 'open_group_creation';
-  ```
-  Then also show the "Create group" choice to newcomers (the Welcome screen offers it whenever the database says the person may create one).
+- **Who can create a group:** anyone who belongs to at least one group, as a User or an Administrator (enforced in the database). Whoever creates a group is its Administrator: they add and remove people, change roles, and rename or delete it; the people they add as Users can see the group but not change it. There's no separate owner: every Administrator of a group has the same powers, and a group always keeps at least one.
+- People who sign in without an invitation can't sign up at all, so creating groups stays invitation-only. To let anyone signed in create a group even before joining one, run `update private.settings set value = 'true' where key = 'open_group_creation';` in the Supabase SQL editor (the Welcome screen then offers it).
+- **Access → Groups** shows your role in each group, with Rename and Delete only where you're an Administrator.
 - Deleting a group removes all its trips, expenses, people, categories, receipts and access. The app asks you to type the group's name to confirm.
 
 ## Privacy
