@@ -112,7 +112,7 @@ begin
   update public.trips set name = 'renamed by admin' where id = tnew; get diagnostics n = row_count;
   r := r || E'\nAdmin edit User Two''s trip: ' || case when n = 1 then 'ok' else 'FAIL' end;
   delete from public.trips where id = tu1; get diagnostics n = row_count;
-  r := r || E'\nAdmin delete trip holding others'' expenses: ' || case when n = 1 then 'ok' else 'FAIL' end;
+  r := r || E'\nAdmin direct delete of trip holding others'' expenses refused (delete_trip moves them instead): ' || case when n = 0 then 'ok' else 'FAIL' end;
   delete from public.categories where id = cnew; get diagnostics n = row_count;
   r := r || E'\nAdmin delete User Two''s category: ' || case when n = 1 then 'ok' else 'FAIL' end;
   ok := private.is_admin_path(g::text);
