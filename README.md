@@ -89,11 +89,20 @@ The app checks for changes every 15 seconds while open, and whenever it comes ba
 
 ## Roles: Administrators and Users
 
-Every member of a group is an **Administrator** or a **User**. The database enforces this with row-level security on every request. The app doesn't hide anything; it shows "Only Administrators can do that" when the database refuses.
+Every member of a group is an **Administrator** or a **User**. The database enforces this with row-level security on every request. The app also hides the Edit, Delete, Rename and reorder buttons a person isn't allowed to use.
+
+The database records who added each trip, expense, payment, category and receipt photo, and nobody can change that afterwards.
 
 | | Administrators | Users |
 |---|---|---|
-| Trips, expenses, settle-up, categories | Full access | Full access |
+| See all trips, expenses, payments, categories and receipt photos | Yes | Yes |
+| Add trips, expenses, payments, categories and receipt photos | Yes | Yes |
+| Edit or delete **expenses and payments** | Anyone's | Only ones they added |
+| Edit or delete **trips** | Anyone's | Only ones they added; deleting needs every expense in it to be theirs too (deleting a trip deletes its expenses) |
+| Rename or delete **categories** | Anyone's | Only ones they added (renaming relabels every expense that uses it) |
+| Reorder categories | Yes | No |
+| Delete **receipt photos** | Anyone's | Only ones they uploaded, or on an expense they added |
+| Add people or currencies to a trip's lists while logging their own expense | Yes | Yes (added only, never removed or changed) |
 | **People**: see names | Yes | Yes (the ledger needs them) |
 | **People**: add / edit / delete others | Yes | No |
 | **People**: own record (Your details) | Yes | Yes, only the one with their sign-in email |

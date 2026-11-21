@@ -304,14 +304,7 @@ create policy "admins or self edit" on public.parties for update to authenticate
 create policy "admins delete people" on public.parties for delete to authenticated
   using (private.is_admin(group_id));
 
-do $$
-declare t text;
-begin
-  foreach t in array array['trips', 'entries', 'categories'] loop
-    execute format('drop policy if exists "group members only" on public.%I', t);
-    execute format('create policy "group members only" on public.%I for all to authenticated using (private.is_member(group_id)) with check (private.is_member(group_id))', t);
-  end loop;
-end $$;
+-- Trips, expenses and categories: see "who may change what" at the end of this file.
 
 -- Nothing is readable without signing in.
 revoke all on public.groups, public.group_members, public.parties, public.trips, public.entries, public.categories from anon;
@@ -423,8 +416,7 @@ create policy "members upload receipts" on storage.objects for insert to authent
   with check (bucket_id = 'receipts' and private.is_member_path((storage.foldername(name))[1]));
 create policy "members view receipts" on storage.objects for select to authenticated
   using (bucket_id = 'receipts' and private.is_member_path((storage.foldername(name))[1]));
-create policy "members delete receipts" on storage.objects for delete to authenticated
-  using (bucket_id = 'receipts' and private.is_member_path((storage.foldername(name))[1]));
+-- Deleting receipt photos: see "who may change what" at the end of this file.
 
 -- Earlier versions kept the helpers in public; remove them (after the rules above stop using them).
 drop function if exists public.is_member_path(text);
@@ -432,3 +424,175 @@ drop function if exists public.is_owner(uuid);
 drop function if exists public.is_member(uuid);
 drop function if exists public.my_email();
 drop function if exists private.is_owner(uuid);
+
+-- ---------- who may change what (Nov 2026) ----------
+-- Administrators may change anything in their group. A User reads everything in the group,
+-- but may change or delete only the expenses, payments, trips, categories and receipt photos
+-- they added. The database records who added each one, and nobody can change that afterwards.
+
+alter table public.trips      add column if not exists created_by_email text;
+alter table public.categories add column if not exists created_by_email text;
+-- Rows from before this existed belong to the group's first Administrator.
+update public.trips t set created_by_email = (
+  select m.email from public.group_members m where m.group_id = t.group_id and m.role = 'admin' order by m.added_at limit 1)
+where t.created_by_email is null;
+update public.categories c set created_by_email = (
+  select m.email from public.group_members m where m.group_id = c.group_id and m.role = 'admin' order by m.added_at limit 1)
+where c.created_by_email is null;
+
+-- The signed-in user is recorded as the creator on insert, and the creator never changes.
+-- Maintenance without a signed-in user (SQL editor, service key) keeps what it is given.
+create or replace function private.stamp_creator() returns trigger
+language plpgsql set search_path = '' as $$
+begin
+  if private.my_email() = '' then return new; end if;
+  if tg_op = 'INSERT' then
+    new.created_by_email := private.my_email();
+  else
+    new.created_by_email := old.created_by_email;
+  end if;
+  return new;
+end $$;
+
+do $$
+declare t text;
+begin
+  foreach t in array array['trips', 'entries', 'categories'] loop
+    execute format('drop trigger if exists stamp_creator on public.%I', t);
+    execute format('create trigger stamp_creator before insert or update on public.%I for each row execute function private.stamp_creator()', t);
+  end loop;
+end $$;
+
+-- Administrators, or the member who added the row.
+create or replace function private.can_change(g uuid, creator text) returns boolean
+language sql stable security definer set search_path = '' as $$
+  select private.is_admin(g)
+      or (private.my_email() <> '' and lower(coalesce(creator, '')) = private.my_email() and private.is_member(g))
+$$;
+
+-- An entry's trip must be in the entry's own group.
+create or replace function private.trip_in_group(trip uuid, g uuid) returns boolean
+language sql stable security definer set search_path = '' as $$
+  select exists (select 1 from public.trips t where t.id = trip and t.group_id = g)
+$$;
+
+-- Deleting a trip deletes its expenses, so a User may delete their own trip only when
+-- every expense in it is theirs too.
+create or replace function private.trip_only_mine(trip uuid) returns boolean
+language sql stable security definer set search_path = '' as $$
+  select not exists (select 1 from public.entries e
+                     where e.trip_id = trip and lower(coalesce(e.created_by_email, '')) <> private.my_email())
+$$;
+
+create or replace function private.is_admin_path(folder text) returns boolean
+language sql stable security definer set search_path = '' as $$
+  select folder ~ '^[0-9a-f-]{36}$' and private.is_admin(folder::uuid)
+$$;
+
+-- A receipt photo attached to an expense the signed-in user added.
+create or replace function private.receipt_is_mine(path text) returns boolean
+language sql stable security definer set search_path = '' as $$
+  select private.my_email() <> '' and exists (
+    select 1 from public.entries e
+    where e.receipt_path = path and lower(coalesce(e.created_by_email, '')) = private.my_email())
+$$;
+
+-- Renaming a category relabels the expenses that use it, including other people's.
+create or replace function private.rename_category_in_entries() returns trigger
+language plpgsql security definer set search_path = '' as $$
+begin
+  if new.name is distinct from old.name then
+    update public.entries set category = new.name where group_id = new.group_id and category = old.name;
+  end if;
+  return null;
+end $$;
+drop trigger if exists rename_category_in_entries on public.categories;
+create trigger rename_category_in_entries after update of name on public.categories
+  for each row execute function private.rename_category_in_entries();
+
+revoke all on function private.stamp_creator(), private.can_change(uuid, text), private.trip_in_group(uuid, uuid),
+  private.trip_only_mine(uuid), private.is_admin_path(text), private.receipt_is_mine(text),
+  private.rename_category_in_entries() from public, anon;
+grant execute on function private.can_change(uuid, text), private.trip_in_group(uuid, uuid),
+  private.trip_only_mine(uuid), private.is_admin_path(text), private.receipt_is_mine(text) to authenticated;
+
+-- Logging an expense on someone else's trip may add people and currencies to that trip's
+-- lists (never remove or change anything), so a User can include someone new.
+create or replace function public.add_to_trip(trip uuid, people uuid[] default '{}', add_currencies text[] default '{}')
+returns void
+language plpgsql security definer set search_path = '' as $$
+declare
+  t public.trips;
+begin
+  select * into t from public.trips where id = trip for update;
+  if not found or not private.is_member(t.group_id) then
+    raise exception 'not_allowed' using errcode = '42501';
+  end if;
+  update public.trips set
+    member_ids = member_ids || coalesce((
+      select jsonb_agg(p.id) from public.parties p
+      where p.group_id = t.group_id and p.id = any(people) and not (t.member_ids ? p.id::text)), '[]'::jsonb),
+    currencies = currencies || coalesce((
+      select jsonb_agg(distinct c) from unnest(add_currencies) c
+      where c ~ '^[A-Z]{3}$' and not (t.currencies ? c)), '[]'::jsonb)
+  where id = trip;
+end $$;
+revoke all on function public.add_to_trip(uuid, uuid[], text[]) from public, anon;
+grant execute on function public.add_to_trip(uuid, uuid[], text[]) to authenticated;
+
+-- Expenses and payments.
+drop policy if exists "group members only"              on public.entries;
+drop policy if exists "members read entries"            on public.entries;
+drop policy if exists "members add entries"             on public.entries;
+drop policy if exists "admins or creator edit entries"   on public.entries;
+drop policy if exists "admins or creator delete entries" on public.entries;
+create policy "members read entries" on public.entries for select to authenticated
+  using (private.is_member(group_id));
+create policy "members add entries" on public.entries for insert to authenticated
+  with check (private.can_change(group_id, created_by_email) and private.trip_in_group(trip_id, group_id));
+create policy "admins or creator edit entries" on public.entries for update to authenticated
+  using (private.can_change(group_id, created_by_email))
+  with check (private.can_change(group_id, created_by_email) and private.trip_in_group(trip_id, group_id));
+create policy "admins or creator delete entries" on public.entries for delete to authenticated
+  using (private.can_change(group_id, created_by_email));
+
+-- Trips.
+drop policy if exists "group members only"             on public.trips;
+drop policy if exists "members read trips"             on public.trips;
+drop policy if exists "members add trips"              on public.trips;
+drop policy if exists "admins or creator edit trips"   on public.trips;
+drop policy if exists "admins or creator delete trips" on public.trips;
+create policy "members read trips" on public.trips for select to authenticated
+  using (private.is_member(group_id));
+create policy "members add trips" on public.trips for insert to authenticated
+  with check (private.can_change(group_id, created_by_email));
+create policy "admins or creator edit trips" on public.trips for update to authenticated
+  using (private.can_change(group_id, created_by_email)) with check (private.can_change(group_id, created_by_email));
+create policy "admins or creator delete trips" on public.trips for delete to authenticated
+  using (private.is_admin(group_id) or (private.can_change(group_id, created_by_email) and private.trip_only_mine(id)));
+
+-- Categories.
+drop policy if exists "group members only"                  on public.categories;
+drop policy if exists "members read categories"             on public.categories;
+drop policy if exists "members add categories"              on public.categories;
+drop policy if exists "admins or creator edit categories"   on public.categories;
+drop policy if exists "admins or creator delete categories" on public.categories;
+create policy "members read categories" on public.categories for select to authenticated
+  using (private.is_member(group_id));
+create policy "members add categories" on public.categories for insert to authenticated
+  with check (private.can_change(group_id, created_by_email));
+create policy "admins or creator edit categories" on public.categories for update to authenticated
+  using (private.can_change(group_id, created_by_email)) with check (private.can_change(group_id, created_by_email));
+create policy "admins or creator delete categories" on public.categories for delete to authenticated
+  using (private.can_change(group_id, created_by_email));
+
+-- Receipt photos: anyone in the group views and uploads; Administrators delete any, a User
+-- deletes only photos they uploaded or that belong to an expense they added.
+drop policy if exists "members delete receipts"            on storage.objects;
+drop policy if exists "admins or uploader delete receipts" on storage.objects;
+create policy "admins or uploader delete receipts" on storage.objects for delete to authenticated
+  using (bucket_id = 'receipts'
+         and private.is_member_path((storage.foldername(name))[1])
+         and (private.is_admin_path((storage.foldername(name))[1])
+              or owner_id = (select auth.uid())::text
+              or private.receipt_is_mine(name)));

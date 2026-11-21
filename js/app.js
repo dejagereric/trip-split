@@ -151,6 +151,23 @@ const myPartyId = () => {
   const p = state.data.parties.find((x) => (x.email || '').trim().toLowerCase() === e);
   return p ? p.id : '';
 };
+// Roles. Administrators may change anything; a User may change only what they added (the database
+// enforces this; these only decide which buttons to show). On this phone only, you can change everything.
+const isAdmin = () => !store || store.mode !== 'cloud' || state.members.some((m) => m.email === myEmail() && m.role === 'admin');
+const mine = (rec) => !!rec && !!myEmail() && (rec.createdBy || '').trim().toLowerCase() === myEmail();
+const canChange = (rec) => !!rec && (isAdmin() || mine(rec));
+// Deleting a trip deletes its expenses, so a User may delete their own trip only when every expense in it is theirs.
+const canDeleteTrip = (trip) => !!trip && (isAdmin() || (mine(trip) && tripEntries(trip.id).every(mine)));
+const NO_PERMISSION = 'You can only change what you added. Ask an Administrator.';
+// Adding people or currencies to a trip's lists while logging an expense. On a trip you can't
+// change, only the additions are sent, and the database only appends them.
+function saveTripAdditions(trip, updated) {
+  if (canChange(trip)) return store.saveTrip(updated);
+  const people = (updated.members || []).filter((id) => !(trip.members || []).includes(id));
+  const currencies = tripCurrencies(updated).filter((c) => !tripCurrencies(trip).includes(c));
+  return store.addToTrip(trip.id, people, currencies);
+}
+
 // People offered on the Add expense form: the trip's people, plus you (so you're on new expenses by default).
 function formIds() {
   const ids = tripIds();
@@ -404,7 +421,7 @@ function tripsHtml() {
         </button>
         <div class="trip-foot">
           <span class="dots">${ids.length ? ids.slice(0, 8).map((id) => av(id, 'dot')).join('') : '<span class="small muted">No one yet</span>'}</span>
-          <button type="button" class="link" data-action="editTrip" data-id="${esc(t.id)}">Edit</button>
+          ${canChange(t) ? `<button type="button" class="link" data-action="editTrip" data-id="${esc(t.id)}">Edit</button>` : ''}
         </div>
       </div>`;
     }).join('') : `<div class="card center"><p class="strong big">No trips yet</p><p class="muted">Create a trip, then add expenses. People are added as you go.</p>
@@ -462,7 +479,8 @@ function tripEditHtml() {
       </div>
     </div>` : (trip ? '<p class="small muted note">Once people are on this trip, set each family’s people and cabins here.</p>' : '')}
     <button type="button" class="btn primary big" data-action="saveTrip">${trip ? 'Save trip settings' : 'Create trip'}</button>
-    ${trip ? `<button type="button" class="btn danger" data-action="deleteTrip" data-id="${esc(trip.id)}">Delete trip${es.length ? ' and its ' + plural(es.length, 'entry', 'entries') : ''}</button>` : ''}
+    ${trip && canDeleteTrip(trip) ? `<button type="button" class="btn danger" data-action="deleteTrip" data-id="${esc(trip.id)}">Delete trip${es.length ? ' and its ' + plural(es.length, 'entry', 'entries') : ''}</button>` : ''}
+    ${trip && !canDeleteTrip(trip) ? '<p class="small muted note">Other people have added expenses to this trip, so only an Administrator can delete it.</p>' : ''}
   </div>`;
 }
 
@@ -591,10 +609,10 @@ function categoriesHtml() {
         }
         return `<div class="list-row cat-row">
           <span class="grow"><span class="strong">${esc(c.name)}</span><span class="small muted">${n ? plural(n, 'expense', 'expenses') : 'Not used yet'}</span></span>
-          <button type="button" class="icon-btn" data-action="moveCat" data-id="${esc(c.id)}" data-dir="-1" aria-label="Move ${esc(c.name)} up" ${i === 0 ? 'disabled' : ''}>${ICON.up}</button>
-          <button type="button" class="icon-btn" data-action="moveCat" data-id="${esc(c.id)}" data-dir="1" aria-label="Move ${esc(c.name)} down" ${i === cats.length - 1 ? 'disabled' : ''}>${ICON.down}</button>
-          <button type="button" class="btn small-btn" data-action="editCat" data-id="${esc(c.id)}">Rename</button>
-          <button type="button" class="icon-btn danger-icon" data-action="deleteCat" data-id="${esc(c.id)}" aria-label="Delete ${esc(c.name)}" ${cats.length <= 1 ? 'disabled' : ''}>${ICON.trash}</button>
+          ${isAdmin() ? `<button type="button" class="icon-btn" data-action="moveCat" data-id="${esc(c.id)}" data-dir="-1" aria-label="Move ${esc(c.name)} up" ${i === 0 ? 'disabled' : ''}>${ICON.up}</button>
+          <button type="button" class="icon-btn" data-action="moveCat" data-id="${esc(c.id)}" data-dir="1" aria-label="Move ${esc(c.name)} down" ${i === cats.length - 1 ? 'disabled' : ''}>${ICON.down}</button>` : ''}
+          ${canChange(c) ? `<button type="button" class="btn small-btn" data-action="editCat" data-id="${esc(c.id)}">Rename</button>
+          <button type="button" class="icon-btn danger-icon" data-action="deleteCat" data-id="${esc(c.id)}" aria-label="Delete ${esc(c.name)}" ${cats.length <= 1 ? 'disabled' : ''}>${ICON.trash}</button>` : ''}
         </div>`;
       }).join('')}
     </div>
@@ -751,7 +769,7 @@ function balancesHtml() {
     return `<div class="stack"><div class="card center">
       <p class="strong big">No expenses yet</p>
       <p class="muted">${ids.length > 1 ? 'Add the first one.' : 'Add who’s coming, then the first expense.'}</p>
-      ${ids.length > 1 ? '' : `<button class="btn primary" data-action="addPeople">${ICON.plus}Add people</button>`}
+      ${ids.length > 1 || !canChange(curTrip()) ? '' : `<button class="btn primary" data-action="addPeople">${ICON.plus}Add people</button>`}
       <button class="btn ${ids.length > 1 ? 'primary' : ''}" data-action="newExpense">Add first expense</button>
     </div></div>`;
   }
@@ -1047,10 +1065,10 @@ function ledgerListHtml() {
         ${open ? `<div class="entry-body">
           ${rurl ? `<button type="button" class="link with-thumb" data-action="viewReceipt" data-url="${esc(rurl)}"><img src="${esc(rurl)}" alt="">View receipt</button>` : e.receipt ? '<span class="small muted">Loading receipt…</span>' : ''}
           ${e.createdBy ? `<span class="small muted">Added by ${esc(addedBy(e.createdBy))}</span>` : ''}
-          <div class="row-btns">
+          ${canChange(e) ? `<div class="row-btns">
             ${e.kind === 'expense' ? `<button type="button" class="btn" data-action="editExpense" data-id="${esc(e.id)}">Edit</button>` : ''}
             <button type="button" class="btn danger" data-action="del" data-id="${esc(e.id)}">Delete</button>
-          </div>
+          </div>` : ''}
         </div>` : ''}
       </div>`;
     }).join('');
@@ -1244,7 +1262,7 @@ function startPolling() {
 // Words for a failed save. The database refuses what your role doesn't allow.
 function errorText(err) {
   const m = String(err?.message || '');
-  if (err?.code === '42501' || err?.message === 'not_allowed' || /row-level security|permission denied/i.test(m)) return 'Only Administrators can do that.';
+  if (err?.code === '42501' || err?.message === 'not_allowed' || /row-level security|permission denied/i.test(m)) return 'You don’t have permission to do that. Ask an Administrator.';
   if (/at least one Administrator/i.test(m)) return 'A group needs at least one Administrator.';
   if (/limited to Administrators/i.test(m)) return 'Only Administrators can create groups.';
   if (m === 'storage_full') return 'Phone storage is full — remove a receipt photo or two.';
@@ -1294,7 +1312,7 @@ async function addToTrip(pid, forWhat) {
   if ((trip.members || []).includes(pid)) { render(); return; }
   const before = snapshot();
   const updated = { ...trip, members: [...(trip.members || []), pid] };
-  await commit(() => replaceIn('trips', updated), () => store.saveTrip(updated), () => { state.data = before; }, `${nameOf(pid)} added to ${trip.name}`);
+  await commit(() => replaceIn('trips', updated), () => saveTripAdditions(trip, updated), () => { state.data = before; }, `${nameOf(pid)} added to ${trip.name}`);
 }
 
 async function createParty(fields) {
@@ -1334,7 +1352,7 @@ function setFormCurrency(code) {
   if (trip && !tripCurrencies(trip).includes(code)) {
     const updated = { ...trip, currencies: [...tripCurrencies(trip), code] };
     replaceIn('trips', updated);
-    store.saveTrip(updated).catch(() => {});
+    saveTripAdditions(trip, updated).catch(() => {});
   }
   render();
 }
@@ -1378,6 +1396,7 @@ const actions = {
   editTrip(d) {
     const t = state.data.trips.find((x) => x.id === d.id);
     if (!t) return;
+    if (!canChange(t)) { flash(NO_PERMISSION); return; }
     state.tripForm = { id: t.id, name: t.name, start: t.start || '', end: t.end || '', currency: toCode(t.currency), currencies: tripCurrencies(t), defaultSplit: tripDefaultSplit(t),
       weights: { people: { ...(t.weights?.people || {}) }, cabins: { ...(t.weights?.cabins || {}) } } };
     state.picker = d.people ? 'trip' : null;
@@ -1417,7 +1436,7 @@ const actions = {
     const weights = { people: cleanW(f.weights?.people), cabins: cleanW(f.weights?.cabins) };
     const defaultSplit = f.defaultSplit || 'equal';
     const trip = old ? { ...old, name, start: f.start, end: f.end, currency: f.currency, currencies, weights, defaultSplit }
-      : { id: uuid(), name, start: f.start, end: f.end, currency: f.currency, currencies, weights, defaultSplit, members: myPartyId() ? [myPartyId()] : [], createdAt: new Date().toISOString() };
+      : { id: uuid(), name, start: f.start, end: f.end, currency: f.currency, currencies, weights, defaultSplit, members: myPartyId() ? [myPartyId()] : [], createdAt: new Date().toISOString(), createdBy: myEmail() };
     const before = snapshot();
     await commit(() => {
       replaceIn('trips', trip);
@@ -1433,6 +1452,7 @@ const actions = {
   async removeMember(d) {
     const trip = state.data.trips.find((t) => t.id === state.tripForm?.id);
     if (!trip || usesIn(d.id, tripEntries(trip.id))) return;
+    if (!canChange(trip)) { flash(NO_PERMISSION); return; }
     const updated = { ...trip, members: (trip.members || []).filter((id) => id !== d.id) };
     const before = snapshot();
     await commit(() => replaceIn('trips', updated), () => store.saveTrip(updated), () => { state.data = before; }, `${nameOf(d.id)} removed from ${trip.name}`);
@@ -1440,6 +1460,7 @@ const actions = {
   async deleteTrip(d) {
     const trip = state.data.trips.find((t) => t.id === d.id);
     if (!trip) return;
+    if (!canDeleteTrip(trip)) { flash(isAdmin() || mine(trip) ? 'Other people have added expenses to this trip, so only an Administrator can delete it.' : NO_PERMISSION); return; }
     const n = tripEntries(trip.id).length;
     if (!window.confirm(`Delete “${trip.name}”${n ? ' and its ' + plural(n, 'entry', 'entries') : ''} for everyone? This can’t be undone.`)) return;
     const before = snapshot();
@@ -1525,6 +1546,7 @@ const actions = {
   editExpense(d) {
     const e = state.data.entries.find((x) => x.id === d.id);
     if (!e || e.kind !== 'expense') return;
+    if (!canChange(e)) { flash(NO_PERMISSION); return; }
     const members = formIds();
     state.editId = e.id;
     state.form = {
@@ -1556,7 +1578,7 @@ const actions = {
     r.inc.forEach((id) => { if (r.shares[id] > 0) shares[id] = r.shares[id]; });
     const old = state.editId ? state.data.entries.find((x) => x.id === state.editId) : null;
     const entry = {
-      ...(old || { id: uuid(), createdAt: new Date().toISOString() }),
+      ...(old || { id: uuid(), createdAt: new Date().toISOString(), createdBy: myEmail() }),
       tripId: state.tripId, kind: 'expense', desc: fm.desc.trim(), cat: fm.cat, date: fm.date,
       amount: r.amt, payer: fm.payer, shares, mode: r.mode, receipt: state.receipt.ref || '',
       splitWeights: r.weights ? { basis: r.mode, weights: r.weights } : null,
@@ -1578,7 +1600,7 @@ const actions = {
       state.editId = null;
       state.picker = null;
       state.screen = old ? 'ledger' : 'balances';
-    }, async () => { if (tripAfter) await store.saveTrip(tripAfter); await store.saveEntry(entry); }, () => { state.data = before; }, old ? 'Changes saved' : `Added “${entry.desc}” · ${r.foreign ? money(r.origAmt, r.cur) + ' (' + money(entry.amount) + ')' : money(entry.amount)}`);
+    }, async () => { if (tripAfter) await saveTripAdditions(trip, tripAfter); await store.saveEntry(entry); }, () => { state.data = before; }, old ? 'Changes saved' : `Added “${entry.desc}” · ${r.foreign ? money(r.origAmt, r.cur) + ' (' + money(entry.amount) + ')' : money(entry.amount)}`);
   },
 
   // categories
@@ -1588,17 +1610,18 @@ const actions = {
     if (catNames().some((c) => c.toLowerCase() === name.toLowerCase())) { flash(`“${name}” is already a category.`); return; }
     await ensureCatRows();
     const maxSort = state.data.categories.reduce((m, c) => Math.max(m, c.sort), 0);
-    const c = { id: uuid(), name, sort: maxSort + 10 };
+    const c = { id: uuid(), name, sort: maxSort + 10, createdBy: myEmail() };
     const before = snapshot();
     state.newCat = '';
     await commit(() => replaceIn('categories', c), () => store.saveCategory(c), () => { state.data = before; }, `${name} added`);
   },
-  editCat(d) { const c = state.data.categories.find((x) => x.id === d.id); if (c) { state.catEdit = { id: c.id, name: c.name }; render(); const i = $('[data-catedit]'); if (i) i.focus(); } },
+  editCat(d) { const c = state.data.categories.find((x) => x.id === d.id); if (c && !canChange(c)) { flash(NO_PERMISSION); return; } if (c) { state.catEdit = { id: c.id, name: c.name }; render(); const i = $('[data-catedit]'); if (i) i.focus(); } },
   cancelCatName() { state.catEdit = null; render(); },
   async saveCatName() {
     const ed = state.catEdit;
     const c = ed && state.data.categories.find((x) => x.id === ed.id);
     if (!c) return;
+    if (!canChange(c)) { flash(NO_PERMISSION); return; }
     const name = ed.name.trim().slice(0, 40);
     if (!name) { flash('Type a category name.'); return; }
     if (name === c.name) { state.catEdit = null; render(); return; }
@@ -1613,6 +1636,7 @@ const actions = {
     }, async () => { await store.saveCategory(updated); await store.renameCategoryInEntries(oldName, name); }, () => { state.data = before; }, `Renamed to ${name}`);
   },
   async moveCat(d) {
+    if (!isAdmin()) { flash('Only Administrators can reorder categories.'); return; }
     const cats = sortedCats();
     const i = cats.findIndex((c) => c.id === d.id);
     const j = i + Number(d.dir);
@@ -1626,6 +1650,7 @@ const actions = {
   async deleteCat(d) {
     const c = state.data.categories.find((x) => x.id === d.id);
     if (!c) return;
+    if (!canChange(c)) { flash(NO_PERMISSION); return; }
     const n = state.data.entries.filter((e) => e.kind !== 'payment' && e.cat === c.name).length;
     if (!window.confirm(`Delete the “${c.name}” category?${n ? ` ${plural(n, 'expense keeps', 'expenses keep')} it as a label.` : ''}`)) return;
     const before = snapshot();
@@ -1668,6 +1693,7 @@ const actions = {
   toggle(d) { state.openId = state.openId === d.id ? null : d.id; render(); },
   async del(d) {
     const gone = state.data.entries.find((e) => e.id === d.id);
+    if (gone && !canChange(gone)) { flash(NO_PERMISSION); return; }
     if (!gone || !window.confirm(`Delete “${rowTitle(gone)}” (${money(gone.amount)}) for everyone?`)) return;
     const before = snapshot();
     await commit(() => { removeFrom('entries', d.id); state.openId = null; }, () => store.deleteEntry(d.id), () => { state.data = before; }, 'Entry deleted');
@@ -1682,7 +1708,7 @@ const actions = {
     const calc = computeBalances(tripEntries(), ids);
     const t = minimalTransfers(calc.net, ids)[Number(d.i)];
     if (!t) return;
-    const entry = { id: uuid(), tripId: state.tripId, kind: 'payment', from: t.from, to: t.to, amount: t.amount, date: todayISO(), shares: {}, createdAt: new Date().toISOString() };
+    const entry = { id: uuid(), tripId: state.tripId, kind: 'payment', from: t.from, to: t.to, amount: t.amount, date: todayISO(), shares: {}, createdAt: new Date().toISOString(), createdBy: myEmail() };
     const before = snapshot();
     await commit(() => replaceIn('entries', entry), () => store.saveEntry(entry), () => { state.data = before; }, `Recorded: ${nameOf(t.from)} paid ${nameOf(t.to)} ${money(t.amount)}`);
   },

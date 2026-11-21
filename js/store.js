@@ -61,6 +61,11 @@ function localStore(groupId) {
     groupId,
     async load() { return read(); },
     async saveTrip(t) { update((d) => { d.trips = upsertById(d.trips, t); }); },
+    async addToTrip(id, people = [], currencies = []) {
+      update((d) => { d.trips = d.trips.map((t) => (t.id !== id ? t : { ...t,
+        members: Array.from(new Set([...(t.members || []), ...people])),
+        currencies: Array.from(new Set([...(t.currencies || [t.currency]), ...currencies])) })); });
+    },
     async deleteTrip(id) { update((d) => { d.trips = d.trips.filter((t) => t.id !== id); d.entries = d.entries.filter((e) => e.tripId !== id); }); },
     async saveParty(p) { update((d) => { d.parties = upsertById(d.parties, p); }); },
     async deleteParty(id) { update((d) => { d.parties = d.parties.filter((p) => p.id !== id); }); },
@@ -104,7 +109,7 @@ async function cloudStore(config) {
   const signed = new Map(); // receipt path -> { url, at }
 
   const tripRow = (t) => ({ id: t.id, group_id: groupId, name: t.name, currency: t.currency, currencies: t.currencies || [t.currency], weights: t.weights || {}, default_split: t.defaultSplit || 'equal', start_on: t.start || null, end_on: t.end || null, member_ids: t.members || [], created_at: t.createdAt });
-  const tripFrom = (r) => ({ id: r.id, name: r.name, currency: r.currency, currencies: Array.isArray(r.currencies) ? r.currencies : null, weights: r.weights || {}, defaultSplit: r.default_split || 'equal', start: r.start_on || '', end: r.end_on || '', members: r.member_ids || [], createdAt: r.created_at });
+  const tripFrom = (r) => ({ id: r.id, name: r.name, currency: r.currency, currencies: Array.isArray(r.currencies) ? r.currencies : null, weights: r.weights || {}, defaultSplit: r.default_split || 'equal', start: r.start_on || '', end: r.end_on || '', members: r.member_ids || [], createdAt: r.created_at, createdBy: r.created_by_email || '' });
   const partyRow = (p) => ({ id: p.id, group_id: groupId, name: p.name, phone: p.phone || null, email: p.email || null, color: p.color ?? 0, payment: p.payment || {}, created_at: p.createdAt });
   const partyFrom = (r) => ({ id: r.id, name: r.name, phone: r.phone || '', email: r.email || '', color: r.color ?? 0, payment: r.payment || {}, createdAt: r.created_at });
   const entryRow = (e) => ({
@@ -175,19 +180,27 @@ async function cloudStore(config) {
         sb.from('trips').select('*').eq('group_id', groupId).then(must),
         sb.from('parties').select('*').eq('group_id', groupId).then(must),
         sb.from('entries').select('*').eq('group_id', groupId).order('created_at').then(must),
-        sb.from('categories').select('id, name, sort').eq('group_id', groupId).order('sort').then(must),
+        sb.from('categories').select('id, name, sort, created_by_email').eq('group_id', groupId).order('sort').then(must),
       ]);
-      return { trips: trips.map(tripFrom), parties: parties.map(partyFrom), entries: entries.map(entryFrom), categories };
+      return { trips: trips.map(tripFrom), parties: parties.map(partyFrom), entries: entries.map(entryFrom),
+        categories: categories.map((c) => ({ id: c.id, name: c.name, sort: c.sort, createdBy: c.created_by_email || '' })) };
     },
     async saveTrip(t) { must(await sb.from('trips').upsert(tripRow(t))); },
-    async deleteTrip(id) { must(await sb.from('trips').delete().eq('id', id)); },
+    // A User may add expenses to anyone's trip; the database only appends people and currencies here.
+    async addToTrip(id, people = [], currencies = []) {
+      if (!people.length && !currencies.length) return;
+      must(await sb.rpc('add_to_trip', { trip: id, people, add_currencies: currencies }));
+    },
+    // A delete the database refuses removes nothing rather than failing, so check what was removed.
+    async deleteTrip(id) { if (!must(await sb.from('trips').delete().eq('id', id).select('id')).length) throw new Error('not_allowed'); },
     async saveParty(p) { must(await sb.from('parties').upsert(partyRow(p))); },
     async deleteParty(id) { if (!must(await sb.from('parties').delete().eq('id', id).select('id')).length) throw new Error('not_allowed'); },
     async saveEntry(e) { must(await sb.from('entries').upsert(entryRow(e))); },
-    async deleteEntry(id) { must(await sb.from('entries').delete().eq('id', id)); },
+    async deleteEntry(id) { if (!must(await sb.from('entries').delete().eq('id', id).select('id')).length) throw new Error('not_allowed'); },
     async saveCategory(c) { must(await sb.from('categories').upsert({ id: c.id, group_id: groupId, name: c.name, sort: c.sort })); },
-    async deleteCategory(id) { must(await sb.from('categories').delete().eq('id', id)); },
-    async renameCategoryInEntries(from, to) { must(await sb.from('entries').update({ category: to }).eq('group_id', groupId).eq('category', from)); },
+    async deleteCategory(id) { if (!must(await sb.from('categories').delete().eq('id', id).select('id')).length) throw new Error('not_allowed'); },
+    // The database relabels every expense when a category is renamed (including other people's).
+    async renameCategoryInEntries() {},
     async saveMany(more) {
       if (more.parties?.length) must(await sb.from('parties').upsert(more.parties.map(partyRow)));
       if (more.trips?.length) must(await sb.from('trips').upsert(more.trips.map(tripRow)));
