@@ -30,6 +30,11 @@ _Last updated: November 21, 2026_
 - **Update banner (Nov 1):** the app checks for a new release when it comes back to the front (and every 30 min). When one has arrived, a banner at the top says “A new version of Trip Split is ready” with a Refresh button. The service worker also skips the browser's HTTP cache. Remember to bump `VERSION` in `sw.js` on each release, since that's what triggers the banner.
 - **Layout:** the app is pinned to the visible screen (fixed position), which fixes the tab bar dropping below the screen on Android.
 
+## Next: inactive trips and safer trip deletion (planned Nov 21)
+
+Plan and open decisions: https://claude.ai/artifact/JRZJqNSa2UcsSvqQBGAHkX ("Trip Split: inactive trips and safer trip deletion").
+Owners and Administrators can mark a trip inactive (hidden, read-only); deleting a trip moves other people's entries to a default trip each of them owns (`delete_trip()`), and only the deleter's own entries are deleted. Waiting on Eric's answers to the seven decisions in the plan.
+
 ## Next: custom domain `trips.ericdejager.com`
 
 **Eric's domains, including ericdejager.com, are managed at GoDaddy** (godaddy.com → My Products → Domains → ericdejager.com → DNS).
