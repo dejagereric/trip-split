@@ -219,7 +219,26 @@ manifest.webmanifest     home-screen install settings
 supabase/schema.sql      tables, access rules, photo bucket
 supabase/functions/extract-receipt/index.ts   receipt reader
 tests/logic.test.mjs     math tests (node tests/logic.test.mjs)
+tests/export.test.mjs    CSV export tests (node tests/export.test.mjs)
+tests/browser/           browser tests (tests/browser/run.sh)
+supabase/tests/          database access-rule tests
 ```
+
+## Tests
+
+- **Unit tests:** `node tests/logic.test.mjs` and `node tests/export.test.mjs`.
+- **Browser tests:** `tests/browser/run.sh` serves the app locally and drives it in Chromium with Playwright. It needs Node and Playwright with Chromium (`npm i -D playwright && npx playwright install chromium`, unless they're already installed). The app talks to `tests/browser/stand-in-supabase.mjs`, an in-memory stand-in for Supabase that applies the same access rules, so no network or database is needed. To run a single file: `tests/browser/run.sh tests/browser/groups.test.cjs`.
+
+  | File | What it checks |
+  |---|---|
+  | `permissions.test.cjs` | Users change only what they added; Administrators change anything |
+  | `trip-lifecycle.test.cjs` | Inactive trips; deleting a trip moves other people's entries |
+  | `groups.test.cjs` | Your role per group; a User creating a group becomes its Administrator |
+  | `demo-mode.test.cjs` | On-phone demo mode stays fully editable |
+  | `csp.test.mjs` | The Content Security Policy allows what the app uses and blocks the rest |
+
+  If you change the database rules, change the stand-in to match, or these tests will check the old rules.
+- **Database tests:** the files in `supabase/tests/` run in the Supabase SQL editor (or through the Supabase connector). Each one sets up throwaway data, tries every allowed and forbidden action as different people, then raises an error on purpose so that everything is rolled back; the error message is the report, and every line should end in "ok". Run `rbac_creator_rules.test.sql` and `trip_lifecycle.test.sql` right after `schema.sql`; `group_creation.test.sql` runs on its own.
 
 ## Updating
 
