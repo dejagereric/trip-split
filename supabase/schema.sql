@@ -108,10 +108,13 @@ revoke all on private.settings from public, anon, authenticated;
 -- To open it to everyone later:  update private.settings set value = 'true' where key = 'open_group_creation';
 insert into private.settings (key, value) values ('open_group_creation', 'false') on conflict (key) do nothing;
 
+-- Anyone who belongs to a group (a User or an Administrator) may create a new group, and becomes
+-- its Administrator. People without an invitation can't sign up, so creation stays invitation-only.
 create or replace function private.may_create_group() returns boolean
 language sql stable security definer set search_path = '' as $$
-  select coalesce((select value = 'true'::jsonb from private.settings where key = 'open_group_creation'), false)
-      or exists (select 1 from public.group_members m where m.email = private.my_email() and m.role = 'admin')
+  select private.my_email() <> '' and (
+    coalesce((select value = 'true'::jsonb from private.settings where key = 'open_group_creation'), false)
+    or exists (select 1 from public.group_members m where m.email = private.my_email()))
 $$;
 revoke all on function private.may_create_group() from public, anon;
 grant execute on function private.may_create_group() to authenticated;

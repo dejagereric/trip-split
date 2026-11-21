@@ -195,6 +195,7 @@ function inactiveBanner(trip = curTrip()) {
 }
 const NO_PERMISSION = 'You can only change what you added. Ask an Administrator.';
 const INACTIVE_TRIP = 'This trip is inactive. Make it active again to change it.';
+const NO_GROUP_CREATE = 'You can create a group once you belong to one. Ask someone to invite you first.';
 // Adding people or currencies to a trip's lists while logging an expense. On a trip you can't
 // change, only the additions are sent, and the database only appends them.
 function saveTripAdditions(trip, updated) {
@@ -716,7 +717,7 @@ function accessHtml() {
       <button type="button" class="btn" data-action="signOut">Sign out</button>
     </div>
     <h2>Groups</h2>
-    <p class="small muted note">A group is one circle of people: its trips, people, categories and who can sign in. Groups never see each other.</p>
+    <p class="small muted note">A group is one circle of people: its trips, people, categories and who can sign in. Groups never see each other. Anyone can create a new group and becomes its Administrator.</p>
     <div class="card tight">
       ${state.groups.map((g) => {
         const current = g.id === store.groupId;
@@ -728,11 +729,11 @@ function accessHtml() {
           </div>`;
         }
         return `<div class="list-row access-row">
-          <span class="grow"><span class="strong">${esc(g.name)}</span><span class="small muted">${current ? 'Open now' : 'Tap Open to switch'}</span></span>
+          <span class="grow"><span class="strong">${esc(g.name)}</span><span class="small muted">${roleName(g.role)} · ${current ? 'Open now' : 'Tap Open to switch'}</span></span>
           <div class="row-btns">
             ${current ? '' : `<button type="button" class="btn small-btn" data-action="switchGroup" data-id="${esc(g.id)}">Open</button>`}
-            <button type="button" class="btn small-btn" data-action="editGroup" data-id="${esc(g.id)}">Rename</button>
-            <button type="button" class="btn small-btn danger" data-action="deleteGroup" data-id="${esc(g.id)}">Delete</button>
+            ${g.role === 'admin' ? `<button type="button" class="btn small-btn" data-action="editGroup" data-id="${esc(g.id)}">Rename</button>
+            <button type="button" class="btn small-btn danger" data-action="deleteGroup" data-id="${esc(g.id)}">Delete</button>` : ''}
           </div>
         </div>`;
       }).join('')}
@@ -1312,7 +1313,7 @@ function errorText(err) {
   if (/trip_inactive/.test(m)) return INACTIVE_TRIP;
   if (err?.code === '42501' || err?.message === 'not_allowed' || /row-level security|permission denied/i.test(m)) return 'You don’t have permission to do that. Ask an Administrator.';
   if (/at least one Administrator/i.test(m)) return 'A group needs at least one Administrator.';
-  if (/limited to Administrators/i.test(m)) return 'Only Administrators can create groups.';
+  if (/limited to Administrators/i.test(m)) return NO_GROUP_CREATE;
   if (m === 'storage_full') return 'Phone storage is full — remove a receipt photo or two.';
   if (/duplicate key/i.test(m)) return 'That already exists.';
   return 'Couldn’t save. Check your connection and try again.';
@@ -1904,7 +1905,11 @@ const actions = {
     render();
   },
   async switchGroup(d) { pref.set('activeGroup', d.id); state.screen = 'trips'; await enterGroup(); },
-  editGroup(d) { const g = state.groups.find((x) => x.id === d.id); if (g) { state.groupEdit = { id: g.id, name: g.name }; render(); const i = $('[data-groupedit]'); if (i) i.focus(); } },
+  editGroup(d) {
+    const g = state.groups.find((x) => x.id === d.id);
+    if (g && g.role !== 'admin') { flash('Only the group’s Administrators can rename or delete it.'); return; }
+    if (g) { state.groupEdit = { id: g.id, name: g.name }; render(); const i = $('[data-groupedit]'); if (i) i.focus(); }
+  },
   cancelGroupName() { state.groupEdit = null; render(); },
   async saveGroupName() {
     const ed = state.groupEdit;
@@ -1927,9 +1932,10 @@ const actions = {
       state.screen = 'trips';
       await enterGroup();
       flash(`${name} created. You’re its Administrator.`);
-    } catch (err) { flash(/limited to Administrators/i.test(err?.message || '') ? 'Only Administrators can create groups.' : errorText(err)); }
+    } catch (err) { flash(errorText(err)); }
   },
   async deleteGroup(d) {
+    if ((state.groups.find((g) => g.id === d.id) || {}).role !== 'admin') { flash('Only the group’s Administrators can rename or delete it.'); return; }
     const g = state.groups.find((x) => x.id === d.id);
     if (!g) return;
     const typed = window.prompt(`Delete “${g.name}” for everyone? This removes all of its trips, expenses, people, categories, receipts and access, and can’t be undone.\n\nType the group name to confirm:`);
