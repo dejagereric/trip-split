@@ -1,6 +1,6 @@
 # Trip Split: where we left off
 
-_Last updated: October 26, 2026_
+_Last updated: November 21, 2026_
 
 ## Done
 
@@ -12,7 +12,8 @@ _Last updated: October 26, 2026_
   - Security advisor: only `create_group` is flagged, and that's intentional.
   - Edge function `extract-receipt` deployed (`verify_jwt: false`; it checks sign-in and membership itself).
   - `ANTHROPIC_API_KEY` secret set (by Eric).
-  - Custom SMTP set up (Gmail), and the Magic Link and Confirm signup templates now send `{{ .Token }}` codes.
+  - Sign-in emails (Nov 21): custom SMTP through Google Workspace (`smtp.gmail.com:587`, user eric@ericdejager.com with an app password), sent as **Trip Split &lt;tripsplit@ericdejager.com&gt;** (a Send-as alias on eric@). Replaced the earlier Gmail (eric4nfp@gmail.com) sender; that app password is revoked. The Magic Link and Confirm signup templates send `{{ .Token }}` codes.
+  - Eric's account (Nov 21): moved to **eric@ericdejager.com**. Added as Administrator in both groups ("This is a test", "Sailing the world"), and his person cards and `entries.created_by_email` now use it. The old eric4nfp@gmail.com memberships and sign-in user are kept as a fallback until Eric has signed in with the new address, then can be removed.
 - `js/config.js` has the project URL and publishable key.
 - **Signed-in user ("you"):** a one-time Your details screen (name and phone). You're the default payer and sharer on new expenses (tap your name to take yourself off), new trips start with you, and expenses record who added them (`entries.created_by_email`).
 - **Multi-currency (Oct 26):** each trip has a trip currency (ISO code) plus a short list of preferred currencies (`trips.currencies`, USD and EUR first). On an expense, tap the currency button to pick from the trip's list, or "Other currency" (that adds it to the trip). New expenses default to the last currency used. The day's rate comes from the `fx-rate` edge function (Frankfurter v2) and can be overridden. Stored per expense: `orig_amount_cents`, `orig_currency`, `fx_rate`, `fx_date`; `amount_cents` is always in the trip currency. Receipts set the currency. The Ledger shows both amounts. The trip currency is locked once the trip has expenses.
