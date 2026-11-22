@@ -150,6 +150,7 @@ A **group** is one circle of people: its own trips, people, categories and acces
 
 - Each trip has a **trip currency**. Balances, settle-up and the spent tallies are in it. Set it when creating the trip; it's locked once the trip has expenses.
 - Each trip also has **currencies you'll spend** (USD and EUR by default). On *Add expense*, tap the currency next to the amount to switch. Choosing another currency adds it to the trip's list. New expenses start in the last currency you used.
+- **Typing amounts:** in USD a comma goes between thousands and a period before the cents (`1,234.50`). In EUR it's the other way round (`1.234,50`). Every other currency types like USD. An amount typed the other way round (`1,5` in USD, `12.50` in EUR) isn't guessed at: the form says how to type it. Amounts the app fills in for you (editing, a scanned receipt, Exact shares, switching currency) follow the same rule.
 - Expenses in another currency are converted at **that day's rate** (Frankfurter mid-market rates, through the `fx-rate` Supabase function). You can type your card's actual rate instead. The rate is saved with the expense, so balances never shift later.
 - The Ledger shows what was spent (for example €90.00) and its trip-currency value ($101.13).
 

@@ -5,6 +5,7 @@ import { app } from './pages/app.mjs';
 import { expenseForm } from './pages/expenseForm.mjs';
 import { ledger } from './pages/ledger.mjs';
 import { balances } from './pages/balances.mjs';
+import { TRIPS, USERS } from './seed-data.mjs';
 
 test.describe('Expenses @p1 @expense', () => {
   test('adding an expense saves every field and shows it in the Ledger and Recent', async ({ as }) => {
@@ -109,18 +110,6 @@ test.describe('Expenses @p1 @expense', () => {
     await expect(balances(page).total).toHaveText('$240.00');
   });
 
-  // Today "1,5" is read as 15.00, because the comma is dropped. Someone used to a decimal comma
-  // meant 1.50. Decide the intended behavior, then remove .fixme.
-  test.fixme('"1,5" is read as 1.50, not 15.00', async ({ as }) => {
-    const page = await as('admin');
-    const nav = app(page), form = expenseForm(page), led = ledger(page);
-    await nav.tab('add');
-    await form.fill({ amount: '1,5', description: 'Comma test', date: '2026-10-17' });
-    await form.save();
-    await nav.tab('ledger');
-    await expect(led.card('Comma test')).toContainText('$1.50');
-  });
-
   // Uma is second on the trip, so this also catches "first person on the trip" passing for "you".
   for (const [role, me] of [['admin', 'Ada'], ['user', 'Uma']]) {
     test(`you are the default payer and a sharer on a new expense (${me})`, async ({ as }) => {
@@ -206,5 +195,81 @@ test.describe('Expenses @p1 @expense', () => {
     await nav.tab('ledger');
     await expect(led.card('Lost in the tunnel')).toHaveCount(0);
     await expect(led.cards).toHaveCount(3);
+  });
+});
+
+// How amounts are typed: USD "1,234.50" (comma between thousands, period before the cents),
+// EUR "1.234,50" (the other way round). Every other currency types like USD.
+test.describe('Typing amounts @p1 @expense @currency', () => {
+  const save = async (page, amount, description) => {
+    const form = expenseForm(page);
+    await app(page).tab('add');
+    await form.fill({ amount, description, date: '2026-10-17' });
+    await form.save();
+    await app(page).tab('ledger');
+    return ledger(page).card(description);
+  };
+
+  test('USD: "1,234.50" is one thousand two hundred thirty-four dollars fifty', async ({ as }) => {
+    const page = await as('admin');
+    await expect(await save(page, '1,234.50', 'Charter deposit')).toContainText('$1,234.50');
+  });
+
+  for (const bad of ['1,5', '12,50']) {
+    test(`USD: "${bad}" isn't guessed at; the form says how to type it`, async ({ as }) => {
+      const page = await as('admin');
+      const form = expenseForm(page);
+      await app(page).tab('add');
+      await form.fill({ amount: bad, description: 'Comma test' });
+      await expect(form.status).toHaveText('In USD, type amounts like 1,234.50 (period before the cents).');
+      await expect(form.saveButton).toBeDisabled();
+    });
+  }
+
+  test('EUR: "12,50" and "1.234,50" use a comma before the cents', async ({ as }) => {
+    const page = await as('admin', { trip: TRIPS.eur });
+    await expect(await save(page, '12,50', 'Espresso')).toContainText('€12.50');
+    await expect(await save(page, '1.234,50', 'Boat hire')).toContainText('€1,234.50');
+  });
+
+  test('EUR: "12.50" isn\'t guessed at; the form says how to type it', async ({ as }) => {
+    const page = await as('admin', { trip: TRIPS.eur });
+    const form = expenseForm(page);
+    await app(page).tab('add');
+    await expect(form.amount).toHaveAttribute('placeholder', '0,00');
+    await form.fill({ amount: '12.50', description: 'Period test' });
+    await expect(form.status).toHaveText('In EUR, type amounts like 1.234,50 (comma before the cents).');
+    await expect(form.saveButton).toBeDisabled();
+  });
+
+  test('EUR: editing fills the amount in with a comma, and Exact shares too', async ({ as }) => {
+    const page = await as('admin', { trip: TRIPS.eur });
+    const form = expenseForm(page);
+    await app(page).tab('ledger');
+    await ledger(page).edit('Museum tickets');
+    await expect(form.amount).toHaveValue('50,00');
+    await form.mode('exact');
+    await expect(form.exactAmount(USERS.admin.name)).toHaveValue('25,00');
+    await expect(form.exactAmount(USERS.user.name)).toHaveValue('25,00');
+    await form.exactAmount(USERS.admin.name).fill('30,00');
+    await form.exactAmount(USERS.user.name).fill('20,00');
+    await form.save();
+    await expect(ledger(page).card('Museum tickets')).toContainText('€50.00');
+    await expect(ledger(page).card('Museum tickets')).toContainText('(custom)');
+  });
+
+  test('switching an expense from USD to EUR rewrites what was typed the EUR way', async ({ as }) => {
+    const page = await as('admin');
+    const form = expenseForm(page);
+    await app(page).tab('add');
+    await form.fill({ amount: '1,234.50', description: 'Marina in Croatia', date: '2026-10-15' });
+    await form.currency('EUR');
+    await expect(form.amount).toHaveValue('1234,50');
+    await expect(page.locator('#fx-rate')).toHaveValue('1.1'); // the stand-in's rate
+    await form.save();
+    await app(page).tab('ledger');
+    const card = ledger(page).card('Marina in Croatia');
+    await expect(card).toContainText('€1,234.50');
+    await expect(card).toContainText('$1,357.95'); // 1,234.50 × 1.1
   });
 });

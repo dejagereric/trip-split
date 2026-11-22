@@ -36,8 +36,8 @@ _Last updated: November 22, 2026_
 
 Plan: `docs/regression-test-plan.md` (reviewed and revised Nov 21). Merges to a `staging` branch deploy to staging.trips.ericdejager.com with its own Supabase project, run the regression suite, and promote to `main` when it passes; database changes wait for Eric's approval.
 
-- [x] Step 1 (Nov 22): Playwright test framework (`package.json`, `playwright.config.mjs`), fixtures for both modes, shared seed data, screen helpers, and the first core spec (`tests/regression/expense.spec.mjs`, 14 tests passing in hermetic mode). Breaking the equal-split remainder, the default payer or the rollback on a failed save each makes it fail.
-- [ ] Open question for Eric: "1,5" is saved as 15.00 today (the comma is dropped). Should it mean 1.50? The test is written and marked `fixme` until decided.
+- [x] Step 1 (Nov 22): Playwright test framework (`package.json`, `playwright.config.mjs`), fixtures for both modes, shared seed data, screen helpers, and the first core spec (`tests/regression/expense.spec.mjs`, now 21 tests passing in hermetic mode). Breaking the equal-split remainder, the default payer or the rollback on a failed save each makes it fail.
+- [x] Typing amounts (Nov 22, Eric's decision): USD `1,234.50`, EUR `1.234,50`; other currencies type like USD. An amount typed the other way round is refused with a hint rather than guessed. `parseAmount` / `amountInput` in `js/logic.js`; unit tests plus 8 regression tests. sw v21.
 - [ ] Open question for Eric: when a save fails (offline), the entry is rolled back but the form is cleared too, so what was typed is lost. Keep the form filled instead?
 - [ ] Step 2: `pr.yml` with the VERSION and CSP checks, and prove the gate fails on purpose-made breaks.
 - [ ] Steps 3–4: the rest of the specs, SQL test wrapper, upgrade and deploy scripts.

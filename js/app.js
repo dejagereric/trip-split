@@ -1,5 +1,5 @@
 import { CONFIG } from './config.js';
-import { cents, splitEqual, splitWeighted, computeBalances, minimalTransfers, convert, convertShares } from './logic.js';
+import { splitEqual, splitWeighted, computeBalances, minimalTransfers, convert, convertShares, parseAmount, amountInput, amountExample } from './logic.js';
 import { createStore, DEFAULT_CATEGORIES } from './store.js';
 import { PAY_METHODS, payOptions, payLines, cleanPayment } from './payments.js';
 import { buildTables, downloadCsv, preloadGoogle, exportToGoogle } from './export.js';
@@ -224,6 +224,8 @@ function av(id, size = 'md') {
 }
 
 // ---------- form evaluation ----------
+// Shown when an amount is typed with the other currency's separators ("1,5" in USD, "12.50" in EUR).
+const typingHint = (cur) => `In ${cur}, type amounts like ${amountExample(cur)} (${cur === 'EUR' ? 'comma' : 'period'} before the cents).`;
 function evalForm() {
   const fm = state.form;
   const members = formIds();
@@ -231,11 +233,14 @@ function evalForm() {
   const foreign = cur !== CUR;
   const rate = foreign ? Number(String(fm.rate).replace(/[^0-9.]/g, '')) : 1;
   const hasRate = !foreign || (Number.isFinite(rate) && rate > 0);
-  const origAmt = cents(fm.amt);                       // in the currency spent
+  const typed = parseAmount(fm.amt, cur);              // in the currency spent; NaN if typed the other way round
+  const badAmt = Number.isNaN(typed);
+  const origAmt = badAmt ? 0 : typed;
   const amt = hasRate ? convert(origAmt, rate) : 0;    // in the trip's ledger currency
   const inc = members.filter((id) => !fm.excl[id]);
   let shares = {};
   let origShares = {};
+  let badShare = false;
   const mode = fm.mode || tripDefaultSplit();
   let weights = null;
   if (mode === 'equal') shares = splitEqual(amt, inc);
@@ -244,7 +249,7 @@ function evalForm() {
     weights = Object.fromEntries(inc.map((id) => [id, numW(fm.w[id])]));
     shares = splitWeighted(amt, weights, inc);
   } else {
-    inc.forEach((id) => { origShares[id] = cents(fm.custom[id]); });
+    inc.forEach((id) => { const v = parseAmount(fm.custom[id], cur); if (Number.isNaN(v)) badShare = true; origShares[id] = Number.isNaN(v) ? 0 : v; });
     shares = hasRate ? convertShares(origShares, rate, amt) : {};
   }
   const assigned = inc.reduce((a, id) => a + (origShares[id] || 0), 0);
@@ -252,10 +257,12 @@ function evalForm() {
   let valid = false;
   if (!members.length) msg = 'Add who paid to get started.';
   else if (!fm.payer || !members.includes(fm.payer)) msg = 'Choose who paid.';
+  else if (badAmt) msg = typingHint(cur);
   else if (!origAmt) msg = 'Enter an amount.';
   else if (!hasRate) msg = state.fxBusy ? `Getting the ${cur} → ${CUR} rate…` : `Enter the ${cur} → ${CUR} exchange rate.`;
   else if (!inc.length) msg = 'Choose at least one person to share this cost.';
   else if (weights && !Object.values(weights).some((x) => x > 0)) msg = `Give at least one sharer more than 0 ${BASIS_LABEL[mode]}.`;
+  else if (mode === 'exact' && badShare) msg = typingHint(cur);
   else if (mode === 'exact' && assigned !== origAmt) msg = assigned < origAmt ? `${money(origAmt - assigned, cur)} of ${money(origAmt, cur)} still to assign` : `${money(assigned - origAmt, cur)} more than the total`;
   else if (!fm.desc.trim()) msg = 'Add a short description.';
   else if (!/^\d{4}-\d{2}-\d{2}$/.test(fm.date)) msg = 'Pick a date.';
@@ -966,7 +973,7 @@ function addHtml() {
       <label class="lbl" for="amt-input">Amount</label>
       <span class="amount-row">
         <button type="button" class="cur-btn" data-action="toggleCur" aria-expanded="${!!fm.curOpen}" aria-label="Currency: ${esc(curName(fmCur))}. Change">${esc(fmCur)}${ICON.chevron}</button>
-        <input id="amt-input" data-field="amt" type="text" inputmode="decimal" autocomplete="off" placeholder="0.00" value="${esc(fm.amt)}">
+        <input id="amt-input" data-field="amt" type="text" inputmode="decimal" autocomplete="off" placeholder="${amountInput(0, fmCur)}" value="${esc(fm.amt)}">
       </span>
       ${fm.curOpen ? `<div class="cur-pick">
         <div class="wrap">${tripCurrencies(curTrip()).map((c) => chip(esc(c), 'pickCur', { c }, fmCur === c, `aria-label="${esc(curName(c))}"`)).join('')}</div>
@@ -1018,7 +1025,7 @@ function addHtml() {
           <input data-field="w" data-id="${esc(id)}" type="text" inputmode="decimal" aria-label="${BASIS_LABEL[fm.mode]} for ${esc(nameOf(id))}" value="${esc(fm.w[id] ?? '')}" class="w-input">
           <span class="small muted w-unit">${BASIS_LABEL[fm.mode]}${t == null ? '*' : ''}</span></div>`;
       }).join('') + (members.some((id) => !fm.excl[id] && tripWeight(curTrip(), fm.mode, id) == null) ? `<p class="small muted pad-y">* Not set for this trip yet (counted as 1). Set families’ ${BASIS_LABEL[fm.mode]} in the trip’s settings.</p>` : '') : ''}
-      ${fm.mode === 'exact' ? members.filter((id) => !fm.excl[id]).map((id) => `<div class="exact-row">${av(id, 'sm')}<span class="grow strong">${esc(nameOf(id))}</span><input data-field="custom" data-id="${esc(id)}" type="text" inputmode="decimal" aria-label="Amount for ${esc(nameOf(id))}" placeholder="0.00" value="${esc(fm.custom[id] || '')}"></div>`).join('') : ''}
+      ${fm.mode === 'exact' ? members.filter((id) => !fm.excl[id]).map((id) => `<div class="exact-row">${av(id, 'sm')}<span class="grow strong">${esc(nameOf(id))}</span><input data-field="custom" data-id="${esc(id)}" type="text" inputmode="decimal" aria-label="Amount for ${esc(nameOf(id))}" placeholder="${amountInput(0, fmCur)}" value="${esc(fm.custom[id] || '')}"></div>`).join('') : ''}
       <p id="add-status" class="status" role="status"></p>
     </div>
 
@@ -1084,7 +1091,7 @@ function ledgerHtml() {
 // Text a search can match: description, category, people, amounts, currency, date.
 function searchText(e) {
   const people = entryPeople(e).map(nameOf);
-  const amounts = [e.amount, e.origAmount].filter((c) => c != null).flatMap((c) => [(c / 100).toFixed(2), String(Math.round(c / 100))]);
+  const amounts = [e.amount, e.origAmount].filter((c) => c != null).flatMap((c) => [(c / 100).toFixed(2), amountInput(c, 'EUR'), String(Math.round(c / 100))]);
   return [rowTitle(e), e.cat, e.kind === 'payment' ? 'payment settle' : '', ...people, ...amounts,
     money(e.amount), e.origCurrency ? money(e.origAmount, e.origCurrency) : '', e.origCurrency || CUR,
     e.date, fmtDay(e.date)].join(' ').toLowerCase();
@@ -1395,6 +1402,11 @@ async function chooseContact() {
 
 function setFormCurrency(code) {
   const fm = state.form;
+  // Keep what's typed meaning the same amount, written the new currency's way ("1,234.50" ↔ "1234,50").
+  const was = fm.cur || CUR;
+  const retype = (text) => { const v = parseAmount(text, was); return Number.isNaN(v) || !v ? text : amountInput(v, code); };
+  fm.amt = retype(fm.amt);
+  fm.custom = Object.fromEntries(Object.entries(fm.custom || {}).map(([id, t]) => [id, retype(t)]));
   fm.cur = code; fm.curOpen = false; fm.rateManual = false; fm.rateFor = ''; fm.rate = ''; fm.rateDate = '';
   state.fxError = false;
   const trip = curTrip();
@@ -1610,8 +1622,10 @@ const actions = {
     const fm = state.form;
     if (d.mode === 'exact' && fm.mode !== 'exact') {
       const incl = formIds().filter((id) => !fm.excl[id]);
-      const eq = splitEqual(cents(fm.amt), incl); // in the currency spent
-      fm.custom = Object.fromEntries(incl.map((id) => [id, eq[id] ? (eq[id] / 100).toFixed(2) : '']));
+      const cur = fm.cur || CUR;
+      const total = parseAmount(fm.amt, cur);
+      const eq = splitEqual(Number.isNaN(total) ? 0 : total, incl); // in the currency spent
+      fm.custom = Object.fromEntries(incl.map((id) => [id, eq[id] ? amountInput(eq[id], cur) : '']));
     }
     if ((d.mode === 'people' || d.mode === 'cabins') && fm.wFor !== d.mode) fillWeights(fm, d.mode);
     fm.mode = d.mode;
@@ -1626,13 +1640,13 @@ const actions = {
     state.editId = e.id;
     state.form = {
       ...blankForm(),
-      amt: ((e.origAmount ?? e.amount) / 100).toFixed(2), desc: e.desc, date: e.date, cat: e.cat, payer: e.payer,
+      amt: amountInput(e.origAmount ?? e.amount, e.origCurrency || CUR), desc: e.desc, date: e.date, cat: e.cat, payer: e.payer,
       excl: Object.fromEntries(members.filter((id) => !(e.shares[id] > 0)).map((id) => [id, true])),
       mode: SPLIT_MODES.some(([m]) => m === e.mode) ? e.mode : 'equal',
       w: e.splitWeights && e.splitWeights.weights ? Object.fromEntries(Object.entries(e.splitWeights.weights).map(([k, v]) => [k, String(v)])) : {},
       wFor: e.splitWeights && e.splitWeights.weights ? e.mode : '',
       // Exact shares were stored converted; show them back in the currency spent.
-      custom: Object.fromEntries(Object.entries(e.shares).map(([id, c]) => [id, (c / (e.fxRate || 1) / 100).toFixed(2)])),
+      custom: Object.fromEntries(Object.entries(e.shares).map(([id, c]) => [id, amountInput(c / (e.fxRate || 1), e.origCurrency || CUR)])),
       cur: e.origCurrency || CUR,
       rate: e.fxRate ? String(e.fxRate) : '',
       rateDate: e.fxDate || '',
@@ -2049,7 +2063,7 @@ async function handleReceipt(file) {
   const got = [];
   if (data && typeof data === 'object') {
     const t = Number(data.total);
-    if (data.total != null && Number.isFinite(t) && t > 0) { patch.amt = t.toFixed(2); got.push('amount'); }
+    if (data.total != null && Number.isFinite(t) && t > 0) got.push('amount'); // filled in below, once the currency is known
     if (typeof data.description === 'string' && data.description.trim()) { patch.desc = data.description.trim().slice(0, 80); got.push('description'); }
     if (typeof data.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(data.date)) { patch.date = data.date; got.push('date'); }
     if (catNames().includes(data.category)) patch.cat = data.category;
@@ -2065,6 +2079,7 @@ async function handleReceipt(file) {
     note += ` Currency set to ${rc}.`;
   } else if (rc && !ALL_CURRENCIES.includes(rc)) note += ` Receipt is in ${rc}, which can’t be converted automatically.`;
   if (!ref) note += ' The photo couldn’t be saved.';
+  if (got.includes('amount')) patch.amt = amountInput(Math.round(Number(data.total) * 100), patch.cur || state.form.cur || CUR);
   Object.assign(state.form, patch);
   state.receipt = { ...state.receipt, status: 'done', ref, note };
   render();

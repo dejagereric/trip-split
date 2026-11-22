@@ -18,6 +18,13 @@ export const expenseForm = (page) => {
       if (category) await this.category(category);
       if (payer) await this.payer(payer);
     },
+    exactAmount: (name) => page.locator(`#main [data-field="custom"][aria-label="Amount for ${name}"]`),
+    // Pick the currency the expense was paid in (from the trip's list).
+    async currency(code) {
+      await page.locator('#main [data-action="toggleCur"]').click();
+      await page.locator(`#main [data-action="pickCur"][data-c="${code}"]`).click();
+      await expect(page.locator('#main [data-action="toggleCur"]')).toHaveText(code);
+    },
     category: (name) => chipFor('cat', name).click(),
     payer: (name) => chipFor('payer', name).click(),
     payerChip: (name) => chipFor('payer', name),

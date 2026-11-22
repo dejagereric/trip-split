@@ -53,3 +53,31 @@ const odd = splitWeighted(1001, { A: 1, B: 1, C: 1 }, ['A', 'B', 'C']);
 assert.equal(odd.A + odd.B + odd.C, 1001);
 assert.deepEqual(splitWeighted(999, { A: 3, B: 0 }, ['A', 'B']), { A: 999, B: 0 });
 console.log('proportional tests passed');
+
+// typing amounts: USD "1,234.50", EUR "1.234,50"
+import { parseAmount, amountInput } from '../js/logic.js';
+assert.equal(parseAmount('12.50', 'USD'), 1250);
+assert.equal(parseAmount('1,234.50', 'USD'), 123450);
+assert.equal(parseAmount('1,234,567', 'USD'), 123456700);
+assert.equal(parseAmount('$ 90', 'USD'), 9000);
+assert.equal(parseAmount('.5', 'USD'), 50);
+assert.equal(parseAmount('12.', 'USD'), 1200);
+assert.equal(parseAmount('', 'USD'), 0);
+assert.equal(parseAmount('abc', 'USD'), 0);
+assert.ok(Number.isNaN(parseAmount('1,5', 'USD')));      // a comma is only for thousands in USD
+assert.ok(Number.isNaN(parseAmount('12,50', 'USD')));
+assert.ok(Number.isNaN(parseAmount('1.2.3', 'USD')));
+assert.ok(Number.isNaN(parseAmount(',500', 'USD')));
+assert.equal(parseAmount('12,50', 'EUR'), 1250);
+assert.equal(parseAmount('1,5', 'EUR'), 150);
+assert.equal(parseAmount('1.234,50', 'EUR'), 123450);
+assert.equal(parseAmount('1.234', 'EUR'), 123400);
+assert.equal(parseAmount('€ 90', 'EUR'), 9000);
+assert.ok(Number.isNaN(parseAmount('12.50', 'EUR')));     // a period is only for thousands in EUR
+assert.ok(Number.isNaN(parseAmount('1,234.50', 'EUR')));
+assert.equal(parseAmount('12.50', 'GBP'), 1250);           // everything other than EUR types like USD
+assert.equal(amountInput(1250, 'USD'), '12.50');
+assert.equal(amountInput(1250, 'EUR'), '12,50');
+assert.equal(amountInput(123450, 'EUR'), '1234,50');
+assert.equal(parseAmount(amountInput(123450, 'EUR'), 'EUR'), 123450);
+console.log('amount typing tests passed');

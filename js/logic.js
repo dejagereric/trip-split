@@ -5,6 +5,35 @@ export function cents(s) {
   return Number.isFinite(v) ? Math.round(v * 100) : 0;
 }
 
+// How amounts are typed. USD (and every currency other than EUR): comma between thousands,
+// period before the cents, "1,234.56". EUR: the other way round, "1.234,56".
+export const decimalComma = (cur) => cur === 'EUR';
+export const amountExample = (cur) => (decimalComma(cur) ? '1.234,50' : '1,234.50');
+
+// A typed amount in `cur` → integer cents. Returns 0 for an empty amount, and NaN when the
+// separators don't follow the currency's convention (e.g. "1,5" in USD or "12.50" in EUR), so the
+// form can ask instead of guessing. Thousands separators must sit between groups of 3 digits.
+export function parseAmount(s, cur = 'USD') {
+  const comma = decimalComma(cur);
+  const dec = comma ? ',' : '.';
+  const grp = comma ? '.' : ',';
+  const t = String(s ?? '').replace(/[^0-9.,]/g, '');
+  if (!/[0-9]/.test(t)) return 0;
+  const parts = t.split(dec);
+  if (parts.length > 2) return NaN;
+  const [whole, frac = ''] = parts;
+  if (frac.includes(grp)) return NaN;
+  const groups = whole.split(grp);
+  if (groups.length > 1 && (!groups[0] || groups.slice(1).some((g) => g.length !== 3))) return NaN;
+  return Math.round(parseFloat((groups.join('') || '0') + '.' + (frac || '0')) * 100);
+}
+
+// Cents → the text the amount field shows when it's filled in for you ("12.50" or "12,50").
+export function amountInput(c, cur = 'USD') {
+  const s = (c / 100).toFixed(2);
+  return decimalComma(cur) ? s.replace('.', ',') : s;
+}
+
 // Split `total` cents evenly across `ids`; leftover cents go to the first ids.
 export function splitEqual(total, ids) {
   const out = {};
