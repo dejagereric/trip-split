@@ -47,8 +47,12 @@ class Q {
   run() {
     const t = this.t, all = db[t];
     window.__calls.push(`${this.op} ${t}`);
-    // A test can make the next write fail, as if the phone were offline (window.__failNext = true).
-    if (window.__failNext && this.op !== 'select') { window.__failNext = false; return { data: null, error: { code: '', message: 'Failed to fetch' } }; }
+    // A test can make the next write fail (window.__failNext = true), or every call while the phone
+    // is offline (window.__offline = true), with the error supabase-js gives when there's no network.
+    // The write reaches the database but the reply is lost on the way back (window.__loseReplyNext).
+    if (window.__loseReplyNext && this.op !== 'select') { window.__loseReplyNext = false; window.__calls.pop(); this.run(); return { data: null, error: { code: '', message: 'TypeError: Failed to fetch' } }; }
+    if (window.__refuseNext && this.op !== 'select') { window.__refuseNext = false; return denied(); }
+    if (window.__offline || (window.__failNext && this.op !== 'select')) { window.__failNext = false; return { data: null, error: { code: '', message: 'TypeError: Failed to fetch' } }; }
     const match = () => all.filter((r) => readable[t](r) && this.f.every((f) => f(r)));
     if (this.op === 'select') { const d = match(); return { data: this.one ? d[0] : d, error: null }; }
     if (this.op === 'delete') {
@@ -94,6 +98,7 @@ export function createClient() {
     from: (t) => new Q(t),
     async rpc(name, args) {
       window.__calls.push('rpc ' + name);
+      if (window.__offline) return { data: null, error: { code: '', message: 'TypeError: Failed to fetch' } };
       if (name === 'can_create_group') return { data: db.group_members.some((m) => m.email === me()), error: null };
       if (name === 'create_group') {
         if (!db.group_members.some((m) => m.email === me())) return { data: null, error: { code: '42501', message: 'Creating groups is limited to Administrators.' } };

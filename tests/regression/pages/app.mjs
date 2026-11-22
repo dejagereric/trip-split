@@ -13,6 +13,11 @@ export const app = (page) => ({
     await page.locator(`[data-action="selectTrip"][data-id="${tripId}"]`).click();
     await expect(page.locator('#main[data-screen="balances"]')).toBeVisible();
   },
+  // Reload the data from the database, as the app does when it comes back to the front.
+  async refreshData() {
+    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    await page.waitForTimeout(300);
+  },
   screen: () => page.locator('#main').getAttribute('data-screen'),
   toast: () => page.locator('.toast'),
 });

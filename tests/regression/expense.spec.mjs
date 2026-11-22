@@ -182,20 +182,6 @@ test.describe('Expenses @p1 @expense', () => {
     await expect(payment).toContainText(amount);
   });
 
-  test('a save that fails is rolled back and says why', async ({ as, failNextSave }) => {
-    const page = await as('admin');
-    const nav = app(page), form = expenseForm(page), led = ledger(page), bal = balances(page);
-    await nav.tab('add');
-    await form.fill({ amount: '25', description: 'Lost in the tunnel', date: '2026-10-17' });
-    await failNextSave(page);
-    await form.save();
-    await expect(nav.toast()).not.toHaveText(/^Added/);
-    await expect(nav.toast()).toBeVisible();
-    await expect(bal.total).toHaveText('$235.00');
-    await nav.tab('ledger');
-    await expect(led.card('Lost in the tunnel')).toHaveCount(0);
-    await expect(led.cards).toHaveCount(3);
-  });
 });
 
 // How amounts are typed: USD "1,234.50" (comma between thousands, period before the cents),
@@ -271,5 +257,147 @@ test.describe('Typing amounts @p1 @expense @currency', () => {
     const card = ledger(page).card('Marina in Croatia');
     await expect(card).toContainText('€1,234.50');
     await expect(card).toContainText('$1,357.95'); // 1,234.50 × 1.1
+  });
+});
+
+// Saving while offline: the form stays filled until the connection is back, then it saves by itself.
+test.describe('Saving without a connection @p1 @expense', () => {
+  const OFFLINE_MSG = 'No connection. Your expense is kept here and saves by itself when you’re back online.';
+  const waiting = (page) => page.locator('#main .pending-save');
+
+  test('the form stays filled, and the expense saves itself once back online', async ({ as, goOffline, goOnline }) => {
+    const page = await as('admin');
+    const nav = app(page), form = expenseForm(page), led = ledger(page), bal = balances(page);
+    await nav.tab('add');
+    await form.fill({ amount: '25', description: 'Lost in the tunnel', date: '2026-10-17', category: 'Transport' });
+    await goOffline(page);
+    await form.save();
+
+    await expect(nav.toast()).toHaveText(OFFLINE_MSG);
+    await expect(page.locator('#main')).toHaveAttribute('data-screen', 'add');
+    await expect(form.amount).toHaveValue('25');
+    await expect(form.description).toHaveValue('Lost in the tunnel');
+    await expect(form.date).toHaveValue('2026-10-17');
+    await expect(page.locator('#main [data-action="cat"][aria-pressed="true"]')).toHaveText('Transport');
+    await expect(waiting(page)).toContainText('Waiting for a connection');
+    // Not counted anywhere until it's saved.
+    await nav.tab('ledger');
+    await expect(led.card('Lost in the tunnel')).toHaveCount(0);
+    await nav.tab('balances');
+    await expect(bal.total).toHaveText('$235.00');
+    // Going back to Add still shows it.
+    await nav.tab('add');
+    await expect(form.description).toHaveValue('Lost in the tunnel');
+
+    await goOnline(page);
+    await expect(nav.toast()).toHaveText('Saved “Lost in the tunnel” now that you’re back online');
+    await expect(page.locator('#main')).toHaveAttribute('data-screen', 'balances');
+    await expect(bal.total).toHaveText('$260.00');
+    await nav.tab('ledger');
+    await expect(led.card('Lost in the tunnel')).toHaveCount(1);
+    await nav.tab('add');
+    await expect(form.description).toHaveValue('');
+    await expect(waiting(page)).toHaveCount(0);
+  });
+
+  test('tapping Save again while offline never makes a second copy', async ({ as, goOffline, goOnline }) => {
+    const page = await as('admin');
+    const nav = app(page), form = expenseForm(page), led = ledger(page);
+    await nav.tab('add');
+    await form.fill({ amount: '12', description: 'Parking', date: '2026-10-17' });
+    await goOffline(page);
+    await form.save();
+    await expect(nav.toast()).toHaveText(OFFLINE_MSG);
+    await form.save();
+    await expect(nav.toast()).toHaveText(OFFLINE_MSG);
+    await goOnline(page);
+    await expect(nav.toast()).toHaveText(/back online/);
+    await nav.tab('ledger');
+    await nav.refreshData();
+    await expect(led.card('Parking')).toHaveCount(1);
+    await expect(led.cards).toHaveCount(4);
+  });
+
+  test('a save whose reply was lost doesn\'t make a second copy when it\'s retried', async ({ as, loseNextReply }) => {
+    const page = await as('admin');
+    const nav = app(page), form = expenseForm(page), led = ledger(page);
+    await nav.tab('add');
+    await form.fill({ amount: '14', description: 'Toll road', date: '2026-10-17' });
+    await loseNextReply(page);
+    await form.save();
+    await expect(nav.toast()).toHaveText(OFFLINE_MSG);
+    await form.save(); // tapped again by hand: the same expense, not a new one
+    await expect(nav.toast()).toHaveText('Added “Toll road” · $14.00');
+    await nav.tab('ledger');
+    await nav.refreshData(); // what the database holds, not just this phone's copy
+    await expect(led.card('Toll road')).toHaveCount(1);
+    await expect(led.cards).toHaveCount(4);
+  });
+
+  test('a change made while waiting is kept, and saving it updates the same expense', async ({ as, goOffline, goOnline }) => {
+    const page = await as('admin');
+    const nav = app(page), form = expenseForm(page), led = ledger(page);
+    await nav.tab('add');
+    await form.fill({ amount: '30', description: 'Ferry', date: '2026-10-17' });
+    await goOffline(page);
+    await form.save();
+    await expect(nav.toast()).toHaveText(OFFLINE_MSG);
+    await form.fill({ amount: '35' }); // typed after the failed save, not saved yet
+    await goOnline(page);
+    await expect(nav.toast()).toHaveText(/back online/);
+    await expect(form.amount).toHaveValue('35');          // what they typed is still there
+    await expect(form.saveButton).toHaveText('Save changes'); // ...and now edits the saved expense
+    await form.save();
+    await expect(nav.toast()).toHaveText('Changes saved');
+    await expect(led.card('Ferry')).toHaveCount(1);
+    await expect(led.card('Ferry')).toContainText('$35.00');
+  });
+
+  test('editing an expense offline keeps the edit until it can be saved', async ({ as, goOffline, goOnline }) => {
+    const page = await as('admin');
+    const nav = app(page), form = expenseForm(page), led = ledger(page);
+    await nav.tab('ledger');
+    await led.edit('Harbor dinner');
+    await form.fill({ amount: '95' });
+    await goOffline(page);
+    await form.save();
+    await expect(nav.toast()).toHaveText(OFFLINE_MSG);
+    await expect(form.saveButton).toHaveText('Save changes');
+    await expect(form.amount).toHaveValue('95');
+    await goOnline(page);
+    await expect(nav.toast()).toHaveText(/back online/);
+    await expect(page.locator('#main')).toHaveAttribute('data-screen', 'ledger');
+    await expect(led.card('Harbor dinner')).toContainText('$95.00');
+  });
+
+  test('a waiting expense survives closing the app, and saves when it opens with a connection', async ({ as, goOffline }) => {
+    const page = await as('admin');
+    const nav = app(page), form = expenseForm(page), led = ledger(page);
+    await nav.tab('add');
+    await form.fill({ amount: '18', description: 'Bus tickets', date: '2026-10-17' });
+    await goOffline(page);
+    await form.save();
+    await expect(nav.toast()).toHaveText(OFFLINE_MSG);
+    // The phone reconnects only as the app is reopened: keep the stand-in refusing until the reload.
+    await page.context().setOffline(false);
+    await expect(waiting(page)).toBeVisible();
+    await page.reload();
+    await expect(nav.toast()).toHaveText('Saved “Bus tickets” now that you’re back online');
+    await nav.tab('ledger');
+    await expect(led.card('Bus tickets')).toHaveCount(1);
+  });
+
+  test('a save refused for another reason keeps the form filled and isn\'t retried', async ({ as, refuseNextSave }) => {
+    const page = await as('admin');
+    const nav = app(page), form = expenseForm(page), led = ledger(page);
+    await nav.tab('add');
+    await form.fill({ amount: '40', description: 'Refused one', date: '2026-10-17' });
+    await refuseNextSave(page); // a refusal from the database, not a lost connection
+    await form.save();
+    await expect(nav.toast()).toHaveText('You don’t have permission to do that. Ask an Administrator.');
+    await expect(form.description).toHaveValue('Refused one');
+    await expect(waiting(page)).toHaveCount(0);
+    await nav.tab('ledger');
+    await expect(led.card('Refused one')).toHaveCount(0);
   });
 });

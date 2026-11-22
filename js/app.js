@@ -87,6 +87,7 @@ const blankForm = () => ({ amt: '', desc: '', date: todayISO(), cat: 'Food', pay
 const blankReceipt = () => ({ status: 'idle', blobUrl: '', ref: '', note: '' });
 
 const state = {
+  pending: null, // an expense waiting for a connection (see retryPending)
   screen: 'balances',
   tripId: '',
   data: { trips: [], parties: [], entries: [], categories: [] },
@@ -954,7 +955,9 @@ function addHtml() {
     : r.status === 'done' ? r.note
     : store && store.mode === 'cloud' ? 'Take a photo and the details fill in for you.' : 'Attach a photo. Auto-read works once the app is connected (see README).';
   const addChip = (forWhat) => `<button type="button" class="chip add-chip${picker === forWhat ? ' on' : ''}" data-action="openPicker" data-for="${forWhat}" aria-expanded="${picker === forWhat}">${ICON.plus}Add person</button>`;
-  return `<div class="stack gap-lg">
+  const waiting = state.pending && state.pending.tripId === state.tripId && state.form._id === state.pending.entry.id
+    ? `<div class="card pending-save" role="status"><span class="strong">Waiting for a connection</span><span class="small muted">This expense hasn’t been saved yet. It saves by itself when you’re back online, or tap Save again.</span></div>` : '';
+  return `<div class="stack gap-lg">${waiting}
     <div class="card receipt">
       ${img
         ? `<button type="button" class="thumb" data-action="viewReceipt" data-url="${esc(img)}" aria-label="View receipt photo"><img src="${esc(img)}" alt=""></button>`
@@ -1301,8 +1304,10 @@ async function enterGroup() {
   await refresh();
   if (!curTrip()) state.screen = 'trips';
   if (needsMe()) openMe();
+  loadPending();
   render();
   startPolling();
+  retryPending();
 }
 
 let polling = false;
@@ -1310,8 +1315,8 @@ function startPolling() {
   if (polling || store.mode !== 'cloud') return;
   polling = true;
   // Light polling keeps everyone's phones in step while the app is open.
-  setInterval(() => { if (state.auth === 'ready' && document.visibilityState === 'visible') refresh(); }, 15000);
-  document.addEventListener('visibilitychange', () => { if (state.auth === 'ready' && document.visibilityState === 'visible') refresh(); });
+  setInterval(() => { if (state.auth === 'ready' && document.visibilityState === 'visible') { refresh(); retryPending(); } }, 15000);
+  document.addEventListener('visibilitychange', () => { if (state.auth === 'ready' && document.visibilityState === 'visible') { refresh(); retryPending(); } });
 }
 
 // Words for a failed save. The database refuses what your role doesn't allow.
@@ -1327,15 +1332,69 @@ function errorText(err) {
 }
 
 // Apply a change locally right away, then save; undo and explain if saving fails.
+// undo(err) may return its own message.
 async function commit(apply, save, undo, okMsg) {
   apply();
   if (okMsg) flash(okMsg); else render();
-  try { await save(); }
+  try { await save(); return true; }
   catch (err) {
-    undo();
-    flash(errorText(err));
+    const msg = undo(err);
+    flash(msg || errorText(err));
+    return false;
   }
 }
+
+// ----- an expense waiting for a connection -----
+// When saving an expense fails because there's no connection, the form stays filled and the
+// expense is kept (also on the phone, in case the app is closed) until it can be saved. It's
+// retried when the phone comes back online, every poll while the app is open, and at start-up.
+// The entry keeps its id, so a retry after a save that did reach the database changes nothing.
+const isConnectionError = (err) => (typeof navigator !== 'undefined' && navigator.onLine === false)
+  || /failed to fetch|networkerror|network request failed|load failed|fetch failed/i.test(String(err?.message || err || ''));
+const OFFLINE_KEPT = 'No connection. Your expense is kept here and saves by itself when you’re back online.';
+const pendingKey = () => 'pendingExpense:' + (store ? store.groupId : '') + ':' + myEmail();
+function keepPending(p) {
+  state.pending = p;
+  try { if (p) pref.set(pendingKey(), JSON.stringify(p)); else localStorage.removeItem('tripsplit:' + pendingKey()); } catch {}
+}
+function loadPending() {
+  try { const p = JSON.parse(pref.get(pendingKey()) || 'null'); state.pending = p && p.entry && p.form ? p : null; } catch { state.pending = null; }
+  if (state.pending && state.pending.tripId === state.tripId && !state.form.amt && !state.form.desc) restorePendingForm();
+}
+function restorePendingForm() {
+  const p = state.pending;
+  state.form = JSON.parse(JSON.stringify(p.form));
+  state.editId = p.editId || null;
+}
+let retrying = false;
+async function retryPending() {
+  const p = state.pending;
+  if (!p || retrying || !store || store.mode !== 'cloud' || state.auth !== 'ready') return;
+  retrying = true;
+  try {
+    const trip = state.data.trips.find((t) => t.id === p.tripId);
+    const joining = (p.joining || []).filter((id) => trip && !(trip.members || []).includes(id));
+    if (trip && joining.length) await saveTripAdditions(trip, { ...trip, members: [...(trip.members || []), ...joining] });
+    await store.saveEntry(p.entry);
+  } catch (err) {
+    retrying = false;
+    if (!isConnectionError(err)) { keepPending(null); flash(errorText(err)); } // it will never save; the form still has it
+    return;
+  }
+  retrying = false;
+  keepPending(null);
+  replaceIn('entries', p.entry);
+  // Clear the form if it still holds exactly what was saved; if it was changed since, it now edits the saved entry.
+  if (state.form._id === p.entry.id) {
+    if (JSON.stringify(state.form) === JSON.stringify(p.form)) {
+      state.form = blankForm(); state.editId = null; state.receipt = blankReceipt();
+      if (state.screen === 'add') state.screen = p.editId ? 'ledger' : 'balances';
+    } else state.editId = p.entry.id;
+  }
+  flash(`Saved “${p.entry.desc}” now that you’re back online`);
+  refresh();
+}
+if (typeof window !== 'undefined') window.addEventListener('online', () => { retryPending(); });
 const replaceIn = (key, item) => {
   const list = state.data[key];
   const i = list.findIndex((x) => x.id === item.id);
@@ -1352,6 +1411,7 @@ function selectTrip(id) {
   state.editId = null;
   state.form = blankForm();
   state.picker = null;
+  if (state.pending && state.pending.tripId === id) restorePendingForm();
 }
 
 // Puts a person on the current trip's frequent-participant list (if not already) and on the form.
@@ -1658,7 +1718,7 @@ const actions = {
     render();
     const m = $('#main'); if (m) m.scrollTop = 0;
   },
-  cancelEdit() { state.editId = null; state.form = blankForm(); state.receipt = blankReceipt(); state.screen = 'ledger'; render(); },
+  cancelEdit() { if (state.pending && state.pending.editId && state.pending.editId === state.editId) keepPending(null); state.editId = null; state.form = blankForm(); state.receipt = blankReceipt(); state.screen = 'ledger'; render(); },
   async save() {
     const r = evalForm();
     if (!r.valid) return;
@@ -1667,7 +1727,7 @@ const actions = {
     r.inc.forEach((id) => { if (r.shares[id] > 0) shares[id] = r.shares[id]; });
     const old = state.editId ? state.data.entries.find((x) => x.id === state.editId) : null;
     const entry = {
-      ...(old || { id: uuid(), createdAt: new Date().toISOString(), createdBy: myEmail() }),
+      ...(old || { id: fm._id || uuid(), createdAt: new Date().toISOString(), createdBy: myEmail() }),
       tripId: state.tripId, kind: 'expense', desc: fm.desc.trim(), cat: fm.cat, date: fm.date,
       amount: r.amt, payer: fm.payer, shares, mode: r.mode, receipt: state.receipt.ref || '',
       splitWeights: r.weights ? { basis: r.mode, weights: r.weights } : null,
@@ -1676,12 +1736,14 @@ const actions = {
     };
     pref.set('lastCur:' + state.tripId, r.cur);
     pref.set('lastCur', r.cur);
-    if (state.receipt.blobUrl) URL.revokeObjectURL(state.receipt.blobUrl);
     const trip = curTrip();
     const joining = [fm.payer, ...Object.keys(shares)].filter((id, i, a) => id && a.indexOf(id) === i && !(trip.members || []).includes(id));
     const tripAfter = joining.length ? { ...trip, members: [...(trip.members || []), ...joining] } : null;
     const before = snapshot();
-    await commit(() => {
+    // What's on the form now, kept so a failed save can put it back exactly. The id is kept with
+    // it, so saving the same expense again never makes a second copy.
+    const kept = { form: JSON.parse(JSON.stringify({ ...fm, _id: entry.id })), editId: state.editId, receipt: state.receipt };
+    const ok = await commit(() => {
       if (tripAfter) replaceIn('trips', tripAfter);
       replaceIn('entries', entry);
       state.form = blankForm();
@@ -1689,7 +1751,17 @@ const actions = {
       state.editId = null;
       state.picker = null;
       state.screen = old ? 'ledger' : 'balances';
-    }, async () => { if (tripAfter) await saveTripAdditions(trip, tripAfter); await store.saveEntry(entry); }, () => { state.data = before; }, old ? 'Changes saved' : `Added “${entry.desc}” · ${r.foreign ? money(r.origAmt, r.cur) + ' (' + money(entry.amount) + ')' : money(entry.amount)}`);
+    }, async () => { if (tripAfter) await saveTripAdditions(trip, tripAfter); await store.saveEntry(entry); }, (err) => {
+      state.data = before;
+      state.form = JSON.parse(JSON.stringify(kept.form)); state.editId = kept.editId; state.receipt = kept.receipt; state.screen = 'add';
+      if (!isConnectionError(err)) return '';
+      keepPending({ entry, joining, form: kept.form, editId: kept.editId, tripId: entry.tripId });
+      return OFFLINE_KEPT;
+    }, old ? 'Changes saved' : `Added “${entry.desc}” · ${r.foreign ? money(r.origAmt, r.cur) + ' (' + money(entry.amount) + ')' : money(entry.amount)}`);
+    if (ok) {
+      if (kept.receipt.blobUrl) URL.revokeObjectURL(kept.receipt.blobUrl);
+      if (state.pending && state.pending.entry.id === entry.id) keepPending(null);
+    }
   },
 
   // categories

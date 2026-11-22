@@ -186,6 +186,10 @@ Trips → **Categories**: add, rename, reorder (↑ ↓) and delete expense cate
 
 Set each family's **people** and **cabins** under **trip → Edit → People and cabins per family**. On an expense split by people or cabins, the numbers are filled in from the trip and can be changed for that expense only (say the Smiths bring a guest one night). Each expense keeps the numbers it used, so later changes to the trip don't alter past expenses. Shares always add up to the exact total; leftover cents go to the largest remainders.
 
+## Saving without a connection
+
+If an expense can't be saved because the phone has no connection, it isn't lost: the form stays filled, with a "Waiting for a connection" note, and the expense saves by itself as soon as the phone is back online (or the next time the app opens with a connection, if it was closed in between). Until then it isn't counted in balances or the ledger. Tapping Save again is safe: it's the same expense, so it's never saved twice. A save refused for another reason (for example, something your role doesn't allow) also keeps the form filled, with the reason, but isn't retried.
+
 ## Your profile
 
 The round button with your initials, at the top right of every screen, opens **Your profile**: your name, phone, and how you'd like to be paid back (Venmo, PayPal, etc.), plus Sign out. Save or Back returns you to where you were. Your profile belongs to the current group; if you're in several groups, set it in each.

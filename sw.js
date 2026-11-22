@@ -1,5 +1,5 @@
 // Caches the app shell so it opens instantly (and offline). Bump VERSION on each release.
-const VERSION = 'trip-split-v21';
+const VERSION = 'trip-split-v22';
 const SHELL = [
   './',
   './index.html',

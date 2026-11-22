@@ -36,9 +36,9 @@ _Last updated: November 22, 2026_
 
 Plan: `docs/regression-test-plan.md` (reviewed and revised Nov 21). Merges to a `staging` branch deploy to staging.trips.ericdejager.com with its own Supabase project, run the regression suite, and promote to `main` when it passes; database changes wait for Eric's approval.
 
-- [x] Step 1 (Nov 22): Playwright test framework (`package.json`, `playwright.config.mjs`), fixtures for both modes, shared seed data, screen helpers, and the first core spec (`tests/regression/expense.spec.mjs`, now 21 tests passing in hermetic mode). Breaking the equal-split remainder, the default payer or the rollback on a failed save each makes it fail.
+- [x] Step 1 (Nov 22): Playwright test framework (`package.json`, `playwright.config.mjs`), fixtures for both modes, shared seed data, screen helpers, and the first core spec (`tests/regression/expense.spec.mjs`, now 27 tests passing in hermetic mode). Breaking the equal-split remainder, the default payer or the rollback on a failed save each makes it fail.
 - [x] Typing amounts (Nov 22, Eric's decision): USD `1,234.50`, EUR `1.234,50`; other currencies type like USD. An amount typed the other way round is refused with a hint rather than guessed. `parseAmount` / `amountInput` in `js/logic.js`; unit tests plus 8 regression tests. sw v21.
-- [ ] Open question for Eric: when a save fails (offline), the entry is rolled back but the form is cleared too, so what was typed is lost. Keep the form filled instead?
+- [x] Saving offline (Nov 22, Eric's decision): the form stays filled until the connection is back, then the expense saves by itself (on the `online` event, each 15-second poll, coming back to the front, or the next start-up; it's also kept in localStorage so closing the app doesn't lose it). It keeps its id, so a retry or a second tap never makes a copy. Other refusals keep the form filled but aren't retried. 7 regression tests; sw v22.
 - [ ] Step 2: `pr.yml` with the VERSION and CSP checks, and prove the gate fails on purpose-made breaks.
 - [ ] Steps 3–4: the rest of the specs, SQL test wrapper, upgrade and deploy scripts.
 - [ ] Step 5 (with Eric): staging repo, DNS, staging Supabase project, secrets; confirm a deploy-key push publishes Pages and the pooler addresses connect from a GitHub runner.

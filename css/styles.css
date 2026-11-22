@@ -170,6 +170,7 @@ main { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 4p
 .badge.quiet { background: var(--ground); color: var(--muted); }
 .trip-open .badge + .badge { margin-left: -6px; }
 .inactive-card { border-color: var(--control); background: var(--ground); }
+.pending-save { border-color: var(--accent); gap: 4px; }
 .inactive-trips > summary { cursor: pointer; padding: 12px 4px; font-weight: 600; color: var(--muted); list-style-position: inside; }
 .inactive-trips[open] > summary { margin-bottom: 8px; }
 .list-row { display: flex; align-items: center; gap: 12px; min-height: 64px; padding: 8px 0; border-bottom: 1px solid var(--ground); }

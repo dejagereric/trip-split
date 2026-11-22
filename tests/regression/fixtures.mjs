@@ -48,16 +48,48 @@ export const test = base.extend({
     }
   },
 
-  // failNextSave(page): the next write to the database fails, as it would offline.
-  failNextSave: async ({ mode }, use) => {
+  // refuseNextSave(page): the database refuses the next write, as it does for something your
+  // role doesn't allow (row-level security), rather than the connection failing.
+  refuseNextSave: async ({ mode }, use) => {
     await use(async (page) => {
-      if (mode === 'hermetic') { await page.evaluate(() => { window.__failNext = true; }); return; }
+      if (mode === 'hermetic') { await page.evaluate(() => { window.__refuseNext = true; }); return; }
       let done = false;
       await page.route('**/rest/v1/**', (r) => {
         if (done || r.request().method() === 'GET') return r.continue();
         done = true;
-        return r.abort('internetdisconnected');
+        return r.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ code: '42501', message: 'new row violates row-level security policy' }) });
       });
+    });
+  },
+
+  // loseNextReply(page): the next write reaches the database, but its reply never arrives,
+  // so the app thinks it failed. The worst case for duplicates.
+  loseNextReply: async ({ mode }, use) => {
+    await use(async (page) => {
+      if (mode === 'hermetic') { await page.evaluate(() => { window.__loseReplyNext = true; }); return; }
+      let done = false;
+      await page.route('**/rest/v1/**', async (r) => {
+        if (done || r.request().method() === 'GET') return r.continue();
+        done = true;
+        await r.fetch(); // the database does the write...
+        return r.abort('internetdisconnected'); // ...but the phone never hears back
+      });
+    });
+  },
+
+  // goOffline(page) / goOnline(page): the phone loses and regains its connection. The browser's
+  // own offline switch fires the app's 'online' event; in hermetic mode the stand-in also refuses
+  // every call while offline, as the real database would be unreachable.
+  goOffline: async ({ mode }, use) => {
+    await use(async (page) => {
+      if (mode === 'hermetic') await page.evaluate(() => { window.__offline = true; });
+      await page.context().setOffline(true);
+    });
+  },
+  goOnline: async ({ mode }, use) => {
+    await use(async (page) => {
+      if (mode === 'hermetic') await page.evaluate(() => { window.__offline = false; });
+      await page.context().setOffline(false);
     });
   },
 });
