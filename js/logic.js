@@ -11,14 +11,18 @@ export const decimalComma = (cur) => cur === 'EUR';
 export const amountExample = (cur) => (decimalComma(cur) ? '1.234,50' : '1,234.50');
 
 // A typed amount in `cur` → integer cents. Returns 0 for an empty amount, and NaN when the
-// separators don't follow the currency's convention (e.g. "1,5" in USD or "12.50" in EUR), so the
+// separators don't follow the currency's convention (e.g. "1,5" in USD or "1,234.50" in EUR), so the
 // form can ask instead of guessing. Thousands separators must sit between groups of 3 digits.
+// One exception: in EUR, a single period followed by just 1 or 2 digits ("12.50", "12.5") can't be
+// a thousands separator, so it's read as the decimal point. Phone number pads set to English often
+// have no comma key.
 export function parseAmount(s, cur = 'USD') {
   const comma = decimalComma(cur);
   const dec = comma ? ',' : '.';
   const grp = comma ? '.' : ',';
   const t = String(s ?? '').replace(/[^0-9.,]/g, '');
   if (!/[0-9]/.test(t)) return 0;
+  if (comma && /^[0-9]*\.[0-9]{1,2}$/.test(t)) return Math.round(parseFloat('0' + t) * 100);
   const parts = t.split(dec);
   if (parts.length > 2) return NaN;
   const [whole, frac = ''] = parts;

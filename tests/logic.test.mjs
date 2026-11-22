@@ -73,8 +73,13 @@ assert.equal(parseAmount('1,5', 'EUR'), 150);
 assert.equal(parseAmount('1.234,50', 'EUR'), 123450);
 assert.equal(parseAmount('1.234', 'EUR'), 123400);
 assert.equal(parseAmount('€ 90', 'EUR'), 9000);
-assert.ok(Number.isNaN(parseAmount('12.50', 'EUR')));     // a period is only for thousands in EUR
-assert.ok(Number.isNaN(parseAmount('1,234.50', 'EUR')));
+assert.equal(parseAmount('12.50', 'EUR'), 1250);          // a period with 1–2 digits after it can't be thousands
+assert.equal(parseAmount('12.5', 'EUR'), 1250);
+assert.equal(parseAmount('.5', 'EUR'), 50);
+assert.equal(parseAmount('12.505', 'EUR'), 1250500);       // 3 digits after it: thousands
+assert.ok(Number.isNaN(parseAmount('1,234.50', 'EUR')));  // the USD way round
+assert.ok(Number.isNaN(parseAmount('1.234.50', 'EUR')));
+assert.ok(Number.isNaN(parseAmount('1.2345', 'EUR')));
 assert.equal(parseAmount('12.50', 'GBP'), 1250);           // everything other than EUR types like USD
 assert.equal(amountInput(1250, 'USD'), '12.50');
 assert.equal(amountInput(1250, 'EUR'), '12,50');

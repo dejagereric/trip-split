@@ -218,12 +218,19 @@ test.describe('Typing amounts @p1 @expense @currency', () => {
     await expect(await save(page, '1.234,50', 'Boat hire')).toContainText('€1,234.50');
   });
 
-  test('EUR: "12.50" isn\'t guessed at; the form says how to type it', async ({ as }) => {
+  // Phone number pads set to English often have no comma key.
+  test('EUR: "12.50" also works, since a period followed by 1–2 digits can\'t be thousands', async ({ as }) => {
+    const page = await as('admin', { trip: TRIPS.eur });
+    await expect(await save(page, '12.50', 'Gelato')).toContainText('€12.50');
+    await expect(await save(page, '1.234', 'Mooring')).toContainText('€1,234.00'); // 3 digits: thousands
+  });
+
+  test('EUR: "1,234.50" (the USD way round) isn\'t guessed at; the form says how to type it', async ({ as }) => {
     const page = await as('admin', { trip: TRIPS.eur });
     const form = expenseForm(page);
     await app(page).tab('add');
     await expect(form.amount).toHaveAttribute('placeholder', '0,00');
-    await form.fill({ amount: '12.50', description: 'Period test' });
+    await form.fill({ amount: '1,234.50', description: 'Period test' });
     await expect(form.status).toHaveText('In EUR, type amounts like 1.234,50 (comma before the cents).');
     await expect(form.saveButton).toBeDisabled();
   });
