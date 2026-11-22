@@ -1,0 +1,13 @@
+{
+  "name": "trip-split",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:unit": "node tests/logic.test.mjs && node tests/export.test.mjs",
+    "test:hermetic": "playwright test --project=hermetic",
+    "test:p1": "playwright test --project=hermetic --grep @p1"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0"
+  }
+}

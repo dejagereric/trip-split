@@ -238,6 +238,7 @@ supabase/tests/          database access-rule tests
   | `csp.test.mjs` | The Content Security Policy allows what the app uses and blocks the rest |
 
   If you change the database rules, change the stand-in to match, or these tests will check the old rules.
+- **Regression suite (in progress):** `npm install`, then `npx playwright test --project=hermetic` (or `--grep @p1` for the core money tests only). It serves the app itself and uses the same stand-in, so no network is needed. Tests live in `tests/regression/`, with shared seed data in `seed-data.mjs` and screen helpers in `pages/`. The plan, including the staging site and automatic promotion still to come, is in `docs/regression-test-plan.md`.
 - **Database tests:** the files in `supabase/tests/` run in the Supabase SQL editor (or through the Supabase connector). Each one sets up throwaway data, tries every allowed and forbidden action as different people, then raises an error on purpose so that everything is rolled back; the error message is the report, and every line should end in "ok". Run `rbac_creator_rules.test.sql` and `trip_lifecycle.test.sql` right after `schema.sql`; `group_creation.test.sql` runs on its own.
 
 ## Updating

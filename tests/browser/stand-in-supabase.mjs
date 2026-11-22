@@ -47,6 +47,8 @@ class Q {
   run() {
     const t = this.t, all = db[t];
     window.__calls.push(`${this.op} ${t}`);
+    // A test can make the next write fail, as if the phone were offline (window.__failNext = true).
+    if (window.__failNext && this.op !== 'select') { window.__failNext = false; return { data: null, error: { code: '', message: 'Failed to fetch' } }; }
     const match = () => all.filter((r) => readable[t](r) && this.f.every((f) => f(r)));
     if (this.op === 'select') { const d = match(); return { data: this.one ? d[0] : d, error: null }; }
     if (this.op === 'delete') {

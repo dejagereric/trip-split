@@ -1,6 +1,6 @@
 # Trip Split: where we left off
 
-_Last updated: November 21, 2026_
+_Last updated: November 22, 2026_
 
 ## Done
 
@@ -31,6 +31,18 @@ _Last updated: November 21, 2026_
 - **Inactive trips and safer trip deletion (Nov 21):** plan: https://claude.ai/artifact/JRZJqNSa2UcsSvqQBGAHkX (built with the recommended answer to all seven decisions). The trip's owner or an Administrator can mark a trip inactive (`trips.inactive_at`/`inactive_by`): hidden in a collapsed "Inactive trips" section, its expenses and payments read-only (database rule), make active again from trip settings. `delete_trip()` deletes the caller's own entries and moves everyone else's, unchanged, to their default trip (`trips.default_for_email`, one per person per currency, owned by them, only them on its people list, reactivated if inactive), recording `entries.moved_from` (shown as "Moved from …" in the ledger). A direct trip delete needs every entry to be the caller's, for Administrators too. Migration `trip_lifecycle`. Tests: `supabase/tests/trip_lifecycle.test.sql` (23 checks) and the rbac test (31), all passing on the live database (rolled back). sw v19.
 - **Browser tests (Nov 21):** `tests/browser/run.sh` runs 5 files (permissions, trip lifecycle, groups, demo mode, CSP) in Chromium against `stand-in-supabase.mjs`, an in-memory Supabase that mirrors the access rules. Keep the stand-in in step with `schema.sql`. See README → Tests.
 - **Layout:** the app is pinned to the visible screen (fixed position), which fixes the tab bar dropping below the screen on Android.
+
+## In progress: regression suite and staging gate
+
+Plan: `docs/regression-test-plan.md` (reviewed and revised Nov 21). Merges to a `staging` branch deploy to staging.trips.ericdejager.com with its own Supabase project, run the regression suite, and promote to `main` when it passes; database changes wait for Eric's approval.
+
+- [x] Step 1 (Nov 22): Playwright test framework (`package.json`, `playwright.config.mjs`), fixtures for both modes, shared seed data, screen helpers, and the first core spec (`tests/regression/expense.spec.mjs`, 14 tests passing in hermetic mode). Breaking the equal-split remainder, the default payer or the rollback on a failed save each makes it fail.
+- [ ] Open question for Eric: "1,5" is saved as 15.00 today (the comma is dropped). Should it mean 1.50? The test is written and marked `fixme` until decided.
+- [ ] Open question for Eric: when a save fails (offline), the entry is rolled back but the form is cleared too, so what was typed is lost. Keep the form filled instead?
+- [ ] Step 2: `pr.yml` with the VERSION and CSP checks, and prove the gate fails on purpose-made breaks.
+- [ ] Steps 3–4: the rest of the specs, SQL test wrapper, upgrade and deploy scripts.
+- [ ] Step 5 (with Eric): staging repo, DNS, staging Supabase project, secrets; confirm a deploy-key push publishes Pages and the pooler addresses connect from a GitHub runner.
+- [ ] Step 6: turn on promotion, the production check, rollback and branch rulesets.
 
 ## Next: custom domain `trips.ericdejager.com`
 
